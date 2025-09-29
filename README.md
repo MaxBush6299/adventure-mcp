@@ -328,6 +328,14 @@ curl http://localhost:8080/health
 - **CORS Configuration**: Configurable cross-origin access controls
 - **Health Monitoring**: Built-in health checks and graceful shutdown
 
+## Production Deployment 🚀
+
+For detailed production deployment instructions, troubleshooting, and Azure AI Projects integration, see:
+
+📋 **[DEPLOYMENT.md](./DEPLOYMENT.md)** - Complete production deployment guide
+
+> **Note**: DEPLOYMENT.md contains deployment-specific details and is excluded from version control for security.
+
 ## Troubleshooting
 
 ### Common Issues
@@ -347,6 +355,16 @@ curl http://localhost:8080/health
    - Test health endpoint: `curl http://<fqdn>:8080/health`
    - Check CORS configuration if accessing from browser
 
+4. **Azure AI Projects JSON-RPC Errors (-32000)**
+   - Ensure server properly handles POST requests to `/mcp` endpoint
+   - Verify JSON-RPC 2.0 format compliance
+   - Test with: `{"jsonrpc":"2.0","method":"tools/list","params":{},"id":1}`
+
+5. **Azure AI Projects 404 Errors**
+   - Check if Azure AI Projects is configured with correct endpoint URL
+   - Try alternative endpoints: `/tools`, `/tools/list`, `/mcp/tools`
+   - Verify container FQDN is correct and accessible
+
 ### Logs and Monitoring
 
 ```bash
@@ -355,6 +373,30 @@ az container logs --resource-group <rg> --name <container-group>
 
 # View deployment details
 az deployment group show --resource-group <rg> --name aci-deployment
+
+# Check container status
+az container show --resource-group <rg> --name <container-group> --query "containers[0].instanceView"
+
+# Get container FQDN
+az container show --resource-group <rg> --name <container-group> --query "ipAddress.fqdn" --output tsv
+```
+
+### Debugging Server Issues
+
+```powershell
+# Test all endpoints at once
+$fqdn = "your-container-fqdn:8080"
+
+# Health check
+try { Invoke-RestMethod -Uri "http://$fqdn/health" } catch { Write-Host "Health failed: $_" }
+
+# JSON-RPC 2.0
+try { Invoke-RestMethod -Uri "http://$fqdn/mcp" -Method Post -ContentType "application/json" -Body '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":1}' } catch { Write-Host "JSON-RPC failed: $_" }
+
+# REST endpoints  
+try { Invoke-RestMethod -Uri "http://$fqdn/tools" } catch { Write-Host "REST /tools failed: $_" }
+try { Invoke-RestMethod -Uri "http://$fqdn/tools/list" } catch { Write-Host "REST /tools/list failed: $_" }
+try { Invoke-RestMethod -Uri "http://$fqdn/mcp/tools" } catch { Write-Host "REST /mcp/tools failed: $_" }
 ```
 
 You now have a production-ready, containerized MCP server that enables AI agents to securely interact with your Azure SQL Database!

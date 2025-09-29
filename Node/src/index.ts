@@ -40,12 +40,25 @@ let globalTokenExpiresOn: Date | null = null;
 export async function createSqlConfig(): Promise<{ config: sql.config, token: string, expiresOn: Date }> {
   // Use DefaultAzureCredential for container environments (Managed Identity)
   // Falls back to InteractiveBrowserCredential for local development
+  console.log(`[AUTH] Environment: ${process.env.NODE_ENV}, using ${process.env.NODE_ENV === 'production' ? 'DefaultAzureCredential' : 'InteractiveBrowserCredential'}`);
+  
   const credential = process.env.NODE_ENV === 'production' 
     ? new DefaultAzureCredential()
     : new InteractiveBrowserCredential({
         redirectUri: 'http://localhost'
       });
-  const accessToken = await credential.getToken('https://database.windows.net/.default');
+  
+  let accessToken;
+  try {
+    console.log('[AUTH] Acquiring Azure AD token for SQL Database...');
+    // Try the correct scope for Azure SQL Database
+    accessToken = await credential.getToken('https://database.windows.net/');
+    console.log(`[AUTH] Token acquired successfully, expires at: ${accessToken?.expiresOnTimestamp ? new Date(accessToken.expiresOnTimestamp).toISOString() : 'unknown'}`);
+    console.log(`[AUTH] Token length: ${accessToken?.token?.length || 0} characters`);
+  } catch (error) {
+    console.error('[AUTH] Failed to acquire Azure AD token:', error);
+    throw error;
+  }
 
   const trustServerCertificate = process.env.TRUST_SERVER_CERTIFICATE?.toLowerCase() === 'true';
   const connectionTimeout = process.env.CONNECTION_TIMEOUT ? parseInt(process.env.CONNECTION_TIMEOUT, 10) : 30;
@@ -54,15 +67,15 @@ export async function createSqlConfig(): Promise<{ config: sql.config, token: st
     config: {
       server: process.env.SERVER_NAME!,
       database: process.env.DATABASE_NAME!,
+      port: 1433, // Explicit port for SQL Server
       options: {
         encrypt: true,
-        trustServerCertificate
+        trustServerCertificate,
+        enableArithAbort: true // Sometimes needed for Azure SQL
       },
       authentication: {
-        type: 'azure-active-directory-access-token',
-        options: {
-          token: accessToken?.token!,
-        },
+        type: 'azure-active-directory-default',
+        options: {}
       },
       connectionTimeout: connectionTimeout * 1000, // convert seconds to milliseconds
     },
@@ -95,13 +108,34 @@ const server = new Server(
 // Read READONLY env variable
 const isReadOnly = process.env.READONLY === "true";
 
+// Cache for tools list to improve performance
+let cachedToolsList: any = null;
+function getToolsList() {
+  if (!cachedToolsList) {
+    console.log('[CACHE] Building tools list cache...');
+    const availableTools = isReadOnly
+      ? [listTableTool, readDataTool, describeTableTool]
+      : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool];
+    
+    cachedToolsList = availableTools.map(tool => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema
+    }));
+    console.log(`[CACHE] Cached ${cachedToolsList.length} tools`);
+  }
+  return cachedToolsList;
+}
+
 // Request handlers
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: isReadOnly
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const tools = isReadOnly
     ? [listTableTool, readDataTool, describeTableTool] // todo: add searchDataTool to the list of tools available in readonly mode once implemented
-    : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool], // add all new tools here
-}));
+    : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool]; // add all new tools here
+  
+  return { tools };
+});
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
@@ -188,13 +222,315 @@ async function runHttpServer() {
   }));
   app.use(express.json());
   
+  // Add request timeout middleware
+  app.use((req, res, next) => {
+    // Set a 10-second timeout for all requests (Azure AI Projects expects fast responses)
+    res.setTimeout(10000, () => {
+      console.error(`[${new Date().toISOString()}] Request timeout: ${req.method} ${req.path}`);
+      if (!res.headersSent) {
+        res.status(504).json({
+          error: 'Request timeout',
+          message: 'The request took too long to process (>10s)'
+        });
+      }
+    });
+    next();
+  });
+  
   // Health check endpoint
   app.get('/health', (req, res) => {
     res.json({ status: 'healthy', timestamp: new Date().toISOString() });
   });
   
-  // MCP SSE endpoint - establishes the SSE connection
+  // Legacy REST endpoints for tools (backward compatibility)
+  app.get('/mcp/tools', async (req, res) => {
+    res.json({
+      tools: getToolsList()
+    });
+  });
+
+  // Alternative tools/list endpoint (some MCP clients expect this)
+  app.get('/tools/list', async (req, res) => {
+    res.json({
+      tools: getToolsList()
+    });
+  });
+
+  // Alternative root tools endpoint
+  app.get('/tools', async (req, res) => {
+    res.json({
+      tools: getToolsList()
+    });
+  });
+
+  app.get('/mcp/capabilities', (req, res) => {
+    res.json({
+      capabilities: {
+        tools: { listTools: true }
+      }
+    });
+  });
+
+  // MCP Introspection endpoint - provides complete server information
+  app.get('/mcp/introspect', (req, res) => {
+    const availableTools = isReadOnly
+      ? [listTableTool, readDataTool, describeTableTool]
+      : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool];
+    
+    res.json({
+      server: {
+        name: "MSSQL MCP Server",
+        version: "1.0.0",
+        description: "Model Context Protocol server for Microsoft SQL Server database operations"
+      },
+      capabilities: {
+        tools: { listTools: true }
+      },
+      tools: availableTools.map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema
+      })),
+      configuration: {
+        readOnlyMode: isReadOnly,
+        sqlServer: process.env.SQL_SERVER || 'Not configured',
+        sqlDatabase: process.env.SQL_DATABASE || 'Not configured'
+      },
+      endpoints: [
+        { path: "/health", method: "GET", description: "Health check endpoint" },
+        { path: "/mcp/tools", method: "GET", description: "List available tools" },
+        { path: "/tools", method: "GET", description: "List available tools (alternative)" },
+        { path: "/tools/list", method: "GET", description: "List available tools (alternative 2)" },
+        { path: "/mcp/capabilities", method: "GET", description: "Server capabilities" },
+        { path: "/mcp/introspect", method: "GET", description: "Full server introspection" },
+        { path: "/mcp", method: "POST", description: "MCP JSON-RPC 2.0 endpoint" },
+        { path: "/mcp/sse", method: "GET", description: "MCP SSE connection endpoint (legacy)" },
+        { path: "/mcp/message", method: "POST", description: "MCP message handling endpoint" }
+      ]
+    });
+  });
+  
+  // MCP endpoint - handle both GET and POST requests
+  // GET request returns server info, POST handles JSON-RPC 2.0
   app.get('/mcp', async (req: express.Request, res: express.Response) => {
+    // Some MCP clients expect GET /mcp to return server information
+    res.json({
+      server: {
+        name: "MSSQL MCP Server",
+        version: "1.0.0",
+        description: "Model Context Protocol server for Microsoft SQL Server database operations"
+      },
+      capabilities: {
+        tools: { listTools: true }
+      },
+      tools: getToolsList(),
+      transport: "http",
+      endpoints: {
+        "initialize": "POST /mcp with JSON-RPC 2.0",
+        "tools/list": "GET /mcp or POST /mcp with JSON-RPC 2.0",
+        "tools/call": "POST /mcp with JSON-RPC 2.0", 
+        "ping": "POST /mcp with JSON-RPC 2.0"
+      }
+    });
+  });
+
+  // MCP JSON-RPC 2.0 endpoint - handles direct JSON-RPC requests
+  app.post('/mcp', async (req: express.Request, res: express.Response) => {
+    const startTime = Date.now();
+    console.log(`[${new Date().toISOString()}] JSON-RPC Request: ${req.body?.method || 'unknown'}`);
+    
+    try {
+      const { jsonrpc, method, params, id } = req.body;
+
+      // Validate JSON-RPC 2.0 format
+      if (jsonrpc !== '2.0' || !method) {
+        res.status(400).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32600,
+            message: 'Invalid Request',
+            data: 'Missing or invalid jsonrpc version or method'
+          },
+          id: id || null
+        });
+        return;
+      }
+
+      let result;
+      
+      switch (method) {
+        case 'initialize':
+          // Handle initialize request - required by MCP protocol
+          console.log(`[${new Date().toISOString()}] Processing initialize request`);
+          
+          result = {
+            protocolVersion: "2024-11-05",
+            capabilities: {
+              tools: {},
+              logging: {}
+            },
+            serverInfo: {
+              name: "MSSQL MCP Server",
+              version: "1.0.0"
+            }
+          };
+          
+          console.log(`[${new Date().toISOString()}] initialize completed successfully`);
+          break;
+
+        case 'tools/list':
+          // Handle tools/list request - use cached response for instant reply
+          console.log(`[${new Date().toISOString()}] Processing tools/list request (cached)`);
+          
+          result = {
+            tools: getToolsList()
+          };
+          
+          console.log(`[${new Date().toISOString()}] tools/list returning ${result.tools.length} tools from cache`);
+          break;
+
+        case 'tools/call':
+          // Handle tools/call request
+          if (!params || !params.name) {
+            res.status(400).json({
+              jsonrpc: '2.0',
+              error: {
+                code: -32602,
+                message: 'Invalid params',
+                data: 'Missing tool name'
+              },
+              id
+            });
+            return;
+          }
+
+          const toolName = params.name;
+          const toolArgs = params.arguments || {};
+
+          try {
+            let toolResult;
+            switch (toolName) {
+              case insertDataTool.name:
+                toolResult = await insertDataTool.run(toolArgs);
+                break;
+              case readDataTool.name:
+                toolResult = await readDataTool.run(toolArgs);
+                break;
+              case updateDataTool.name:
+                toolResult = await updateDataTool.run(toolArgs);
+                break;
+              case createTableTool.name:
+                toolResult = await createTableTool.run(toolArgs);
+                break;
+              case createIndexTool.name:
+                toolResult = await createIndexTool.run(toolArgs);
+                break;
+              case listTableTool.name:
+                toolResult = await listTableTool.run(toolArgs);
+                break;
+              case dropTableTool.name:
+                toolResult = await dropTableTool.run(toolArgs);
+                break;
+              case describeTableTool.name:
+                if (!toolArgs || typeof toolArgs.tableName !== "string") {
+                  res.status(400).json({
+                    jsonrpc: '2.0',
+                    error: {
+                      code: -32602,
+                      message: 'Invalid params',
+                      data: `Missing or invalid 'tableName' argument for describe_table tool.`
+                    },
+                    id
+                  });
+                  return;
+                }
+                toolResult = await describeTableTool.run(toolArgs as { tableName: string });
+                break;
+              default:
+                res.status(400).json({
+                  jsonrpc: '2.0',
+                  error: {
+                    code: -32601,
+                    message: 'Method not found',
+                    data: `Unknown tool: ${toolName}`
+                  },
+                  id
+                });
+                return;
+            }
+
+            result = {
+              content: [{ type: "text", text: JSON.stringify(toolResult, null, 2) }]
+            };
+          } catch (error) {
+            res.status(500).json({
+              jsonrpc: '2.0',
+              error: {
+                code: -32000,
+                message: 'Server error',
+                data: `Tool execution failed: ${error}`
+              },
+              id
+            });
+            return;
+          }
+          break;
+
+        case 'notifications/initialized':
+          // Handle initialized notification - required by MCP protocol after initialize
+          console.log(`[${new Date().toISOString()}] Processing notifications/initialized`);
+          
+          // For notifications, we don't send a response (just acknowledge)
+          res.status(200).end();
+          return;
+
+        case 'ping':
+          // Handle ping request for health check - respond immediately
+          console.log(`[${new Date().toISOString()}] Processing ping request`);
+          result = { status: 'ok', timestamp: new Date().toISOString() };
+          break;
+
+        default:
+          res.status(400).json({
+            jsonrpc: '2.0',
+            error: {
+              code: -32601,
+              message: 'Method not found',
+              data: `Unknown method: ${method}`
+            },
+            id
+          });
+          return;
+      }
+
+      // Return successful JSON-RPC 2.0 response
+      const duration = Date.now() - startTime;
+      console.log(`[${new Date().toISOString()}] JSON-RPC Success: ${req.body?.method} (${duration}ms)`);
+      
+      res.json({
+        jsonrpc: '2.0',
+        result,
+        id
+      });
+
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      console.error(`[${new Date().toISOString()}] JSON-RPC Error: ${req.body?.method} (${duration}ms):`, error);
+      
+      res.status(500).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message: 'Server error',
+          data: `Internal server error: ${error}`
+        },
+        id: req.body?.id || null
+      });
+    }
+  });
+
+  // MCP SSE endpoint - establishes the SSE connection (kept for backward compatibility)
+  app.get('/mcp/sse', async (req: express.Request, res: express.Response) => {
     try {
       // Create SSE transport
       const transport = new SSEServerTransport('/mcp/message', res as any as ServerResponse);
@@ -253,8 +589,10 @@ async function runHttpServer() {
   const httpServer = app.listen(port, () => {
     console.log(`MCP Server running on HTTP at port ${port}`);
     console.log(`Health check: http://localhost:${port}/health`);
-    console.log(`MCP SSE endpoint: http://localhost:${port}/mcp`);
-    console.log(`MCP Message endpoint: http://localhost:${port}/mcp/message`);
+    console.log(`MCP JSON-RPC 2.0 endpoint: http://localhost:${port}/mcp`);
+    console.log(`MCP SSE endpoint (legacy): http://localhost:${port}/mcp/sse`);
+    console.log(`Tools endpoint: http://localhost:${port}/mcp/tools`);
+    console.log(`Introspection: http://localhost:${port}/mcp/introspect`);
   });
   
   // Graceful shutdown
@@ -289,6 +627,8 @@ runServer().catch((error) => {
 // Connect to SQL only when handling a request
 
 async function ensureSqlConnection() {
+  console.log(`[SQL] Checking SQL connection status...`);
+  
   // If we have a pool and it's connected, and the token is still valid, reuse it
   if (
     globalSqlPool &&
@@ -297,20 +637,34 @@ async function ensureSqlConnection() {
     globalTokenExpiresOn &&
     globalTokenExpiresOn > new Date(Date.now() + 2 * 60 * 1000) // 2 min buffer
   ) {
+    console.log(`[SQL] Reusing existing connection, token expires: ${globalTokenExpiresOn.toISOString()}`);
     return;
   }
 
+  console.log(`[SQL] Creating new SQL connection...`);
+  
   // Otherwise, get a new token and reconnect
   const { config, token, expiresOn } = await createSqlConfig();
   globalAccessToken = token;
   globalTokenExpiresOn = expiresOn;
 
+  console.log(`[SQL] Config created - Server: ${config.server}, Database: ${config.database}`);
+  console.log(`[SQL] Auth type: ${config.authentication?.type}`);
+
   // Close old pool if exists
   if (globalSqlPool && globalSqlPool.connected) {
+    console.log(`[SQL] Closing existing pool...`);
     await globalSqlPool.close();
   }
 
-  globalSqlPool = await sql.connect(config);
+  try {
+    console.log(`[SQL] Connecting to SQL Server...`);
+    globalSqlPool = await sql.connect(config);
+    console.log(`[SQL] ✅ Connected successfully!`);
+  } catch (error) {
+    console.error(`[SQL] ❌ Connection failed:`, error);
+    throw error;
+  }
 }
 
 // Patch all tool handlers to ensure SQL connection before running
