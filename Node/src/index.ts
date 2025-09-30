@@ -625,8 +625,12 @@ runServer().catch((error) => {
 });
 
 // Connect to SQL only when handling a request
+// Look to add access token from https://learn.microsoft.com/en-us/azure/app-service/tutorial-connect-app-access-sql-database-as-user-dotnet
+// ensure scope is set properly. It is logon as user, see about providing offline access as scope. Token expires after 4 hours, offline access allows for the token to be refreshed.
+// offline access would enable alert functionality
 
-async function ensureSqlConnection() {
+
+async function ensureSqlConnection() { 
   console.log(`[SQL] Checking SQL connection status...`);
   
   // If we have a pool and it's connected, and the token is still valid, reuse it
@@ -645,7 +649,7 @@ async function ensureSqlConnection() {
   
   // Otherwise, get a new token and reconnect
   const { config, token, expiresOn } = await createSqlConfig();
-  globalAccessToken = token;
+  globalAccessToken = token; //Look to implement this as the entra ID token
   globalTokenExpiresOn = expiresOn;
 
   console.log(`[SQL] Config created - Server: ${config.server}, Database: ${config.database}`);
