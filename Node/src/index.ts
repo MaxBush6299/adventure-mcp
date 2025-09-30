@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 
-// Load environment variables
+// Load environment variables from parent directory (repository root)
 import * as dotenv from "dotenv";
-dotenv.config();
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Load .env from repository root (parent of Node directory)
+dotenv.config({ path: join(__dirname, '../../.env') });
 
 // External imports
 import sql from "mssql";
@@ -27,6 +34,10 @@ import { ListTableTool } from "./tools/ListTableTool.js";
 import { DropTableTool } from "./tools/DropTableTool.js";
 import { DefaultAzureCredential, InteractiveBrowserCredential } from "@azure/identity";
 import { DescribeTableTool } from "./tools/DescribeTableTool.js";
+
+// Auth imports
+import { TokenValidator, TokenValidationConfig } from "./auth/index.js";
+import { createAuthMiddleware } from "./middleware/index.js";
 
 // MSSQL Database connection configuration
 // const credential = new DefaultAzureCredential();
@@ -214,6 +225,31 @@ async function runHttpServer() {
   const app = express();
   const port = process.env.PORT || 8080;
   
+  // Initialize token validator (optional - only if AZURE_CLIENT_ID is set)
+  let tokenValidator: TokenValidator | null = null;
+  const requireAuth = process.env.REQUIRE_AUTH === 'true';
+  
+  if (process.env.AZURE_TENANT_ID && process.env.AZURE_CLIENT_ID) {
+    console.log('[AUTH] Initializing token validator with Azure AD configuration');
+    
+    const tokenConfig: TokenValidationConfig = {
+      tenantId: process.env.AZURE_TENANT_ID,
+      audience: process.env.AZURE_CLIENT_ID,
+      issuer: `https://sts.windows.net/${process.env.AZURE_TENANT_ID}/`,
+      validateSignature: true,
+      clockTolerance: 60
+    };
+    
+    tokenValidator = new TokenValidator(tokenConfig);
+    console.log('[AUTH] Token validator initialized successfully');
+  } else {
+    console.log('[AUTH] Token validator not configured (missing AZURE_TENANT_ID or AZURE_CLIENT_ID)');
+    if (requireAuth) {
+      console.error('[AUTH] ERROR: REQUIRE_AUTH is true but auth is not configured!');
+      throw new Error('REQUIRE_AUTH is enabled but Azure AD configuration is missing');
+    }
+  }
+  
   // Middleware
   app.use(cors({
     origin: '*', // Allow all origins as requested
@@ -221,6 +257,16 @@ async function runHttpServer() {
     allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control']
   }));
   app.use(express.json());
+  
+  // Add auth middleware if configured
+  if (tokenValidator) {
+    console.log(`[AUTH] Adding auth middleware (required: ${requireAuth})`);
+    app.use(createAuthMiddleware({
+      tokenValidator,
+      required: requireAuth,
+      logErrors: true
+    }));
+  }
   
   // Add request timeout middleware
   app.use((req, res, next) => {

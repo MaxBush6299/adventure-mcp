@@ -3,7 +3,7 @@
 
 **Project**: MSSQL MCP Server - RLS Enhancement  
 **Created**: September 30, 2025  
-**Status**: Planning Phase  
+**Status**: Phase 1 - In Progress (25% Complete)  
 **Branch**: `rls_updates`
 
 ---
@@ -94,13 +94,13 @@ Enable users to authenticate with Entra ID and connect to SQL "as themselves" wi
 
 #### Deliverables
 1. Create Azure AD App Registration for MCP Server
-   - [ ] Register new application in Azure Portal
-   - [ ] Enable "Public client flows" for local development
-   - [ ] Add API permission: `https://database.windows.net/user_impersonation`
-   - [ ] Configure redirect URIs (`http://localhost` for dev)
-   - [ ] Grant admin consent for API permissions
-2. [ ] Document client ID and tenant ID
-3. [ ] Store credentials in Azure Key Vault (for production)
+   - [x] Register new application in Azure Portal
+   - [x] Enable "Public client flows" for local development
+   - [x] Add API permission: `https://database.windows.net/user_impersonation`
+   - [x] Configure redirect URIs (`http://localhost` for dev)
+   - [x] Grant admin consent for API permissions
+2. [x] Document client ID and tenant ID
+3. [x] Store credentials in Azure Key Vault (for production)
 
 #### Test Cases
 - [ ] ✅ App registration visible in Azure Portal
@@ -119,71 +119,55 @@ API Permissions:
 
 ---
 
-### Task 1.2: Update MCP Server - Accept User Tokens ⬜
+### Task 1.2: Update MCP Server - Accept User Tokens ✅
 **Owner**: Backend Developer  
 **Estimated Time**: 4-6 hours  
-**Status**: Not Started
+**Status**: Complete
 
 #### Deliverables
-1. [ ] Add middleware to extract `Authorization: Bearer <token>` header
-2. [ ] Implement JWT token validation (signature, expiration, issuer)
-3. [ ] Extract user principal (UPN/OID) from token claims
-4. [ ] Store user context per request (thread-safe)
-5. [ ] Add error handling for missing/invalid tokens
+1. [x] Add middleware to extract `Authorization: Bearer <token>` header
+2. [x] Implement JWT token validation (signature, expiration, issuer)
+3. [x] Extract user principal (UPN/OID) from token claims
+4. [x] Store user context per request (thread-safe)
+5. [x] Add error handling for missing/invalid tokens
 
-#### New Files to Create
+#### New Files Created
 ```
 src/auth/
-  ├── TokenValidator.ts      # JWT validation logic
+  ├── TokenValidator.ts      # JWT validation with JWKS
   ├── UserContext.ts          # User identity management
-  └── types.ts                # Auth-related TypeScript types
+  ├── types.ts                # Auth-related TypeScript interfaces
+  └── index.ts                # Module exports
 
 src/middleware/
-  └── AuthMiddleware.ts       # Express middleware for auth
+  ├── AuthMiddleware.ts       # Express middleware for auth
+  └── index.ts                # Module exports
+
+scripts/
+  └── test-auth-middleware.ps1  # Test script for validation
 ```
 
-#### Code Structure
-```typescript
-// Pseudocode - NOT actual implementation
-interface UserIdentity {
-  userId: string;        // UPN or OID
-  email: string;
-  name: string;
-  groups: string[];
-  claims: Record<string, any>;
-}
-
-class TokenValidator {
-  async validateToken(token: string): Promise<UserIdentity>;
-}
-
-// Middleware
-app.use(async (req, res, next) => {
-  const token = extractBearerToken(req);
-  if (!token) return res.status(401).json({ error: 'Unauthorized' });
-  
-  try {
-    req.user = await validator.validateToken(token);
-    next();
-  } catch (error) {
-    res.status(401).json({ error: 'Invalid token' });
-  }
-});
-```
+#### Implementation Notes
+- Uses `jsonwebtoken` and `jwks-rsa` for JWT validation
+- Validates against Azure AD JWKS endpoint
+- Supports optional authentication via `REQUIRE_AUTH` env var
+- Extracts user claims: oid, upn, email, name, groups, roles
+- Attaches `UserContext` to Express request object
+- Includes helper middleware: `requireAuth`, `requireRole`, `requireGroup`
 
 #### Test Cases
-- [ ] ✅ Valid token → extracts user identity correctly
-- [ ] ✅ Expired token → returns 401 Unauthorized
-- [ ] ✅ Missing token → returns 401 Unauthorized
-- [ ] ✅ Invalid signature → returns 401 Unauthorized
-- [ ] ✅ Token from wrong tenant → returns 403 Forbidden
-- [ ] ✅ Malformed token → returns 400 Bad Request
-- [ ] ✅ User claims extracted correctly (email, name, groups)
+- [x] Valid token → extracts user identity correctly
+- [x] Expired token → returns 401 Unauthorized
+- [x] Missing token → returns 401 Unauthorized (if required)
+- [x] Invalid signature → returns 401 Unauthorized
+- [x] Token from wrong tenant → returns 403 Forbidden
+- [x] Malformed token → returns 400 Bad Request
+- [x] User claims extracted correctly (email, name, groups)
 
-#### Dependencies
-- `@azure/identity` - Already installed
-- `jsonwebtoken` - For JWT validation (may need to add)
-- `jwks-rsa` - For fetching public keys (may need to add)
+#### Dependencies Installed
+- `jsonwebtoken` - JWT validation
+- `jwks-rsa` - Azure AD public key fetching
+- `@types/jsonwebtoken` - TypeScript types
 
 ---
 
@@ -1143,12 +1127,12 @@ Any client that can send HTTP requests with an Authorization header can use the 
 
 ## Progress Tracking
 
-### **Phase 1 Progress**: 0% Complete
+### **Phase 1 Progress**: 25% Complete (2/8 tasks)
 
-| Task | Status | Owner | Due Date |
-|------|--------|-------|----------|
-| 1.1: Azure AD App Registration | 🔴 Not Started | DevOps/Admin | TBD |
-| 1.2: Accept User Tokens | 🔴 Not Started | Backend Dev | TBD |
+| Task | Status | Owner | Completed Date |
+|------|--------|-------|----------------|
+| 1.1: Azure AD App Registration | � Complete | DevOps/Admin | Sep 30, 2025 |
+| 1.2: Accept User Tokens | � Complete | Backend Dev | Sep 30, 2025 |
 | 1.3: OBO Token Exchange | 🔴 Not Started | Backend Dev | TBD |
 | 1.4: Connection Pool Management | 🔴 Not Started | Backend Dev | TBD |
 | 1.5: Create Entra ID Users | 🔴 Not Started | DBA | TBD |
@@ -1184,11 +1168,11 @@ Any client that can send HTTP requests with an Authorization header can use the 
 
 ## Next Steps
 
-1. **✅ Review & Approve Plan**: Stakeholder sign-off on design and timeline
-2. **🔲 Set Up Dev Environment**: Provision Azure resources, test databases
-3. **🔲 Kickoff Phase 1**: Begin Task 1.1 (Azure AD App Registration)
-4. **🔲 Weekly Checkpoints**: Review progress against exit criteria
-5. **🔲 Security Review**: Engage security team early in Phase 1
+1. **✅ Review & Approve Plan**: Stakeholder sign-off on design and timeline - COMPLETE
+2. **✅ Set Up Dev Environment**: Azure resources configured - COMPLETE
+3. **✅ Kickoff Phase 1**: Tasks 1.1 and 1.2 completed - IN PROGRESS
+4. **▶️ Continue Task 1.3**: Implement OBO Token Exchange - NEXT
+5. **🔲 Weekly Checkpoints**: Review progress against exit criteria
 
 ---
 
@@ -1210,7 +1194,27 @@ Any client that can send HTTP requests with an Authorization header can use the 
 
 ---
 
-**Document Version**: 1.0  
+**Document Version**: 1.1  
 **Last Updated**: September 30, 2025  
 **Maintained By**: Development Team  
 **Review Frequency**: Weekly during active development
+
+---
+
+## Recent Completions
+
+### September 30, 2025
+- ✅ **Task 1.1 Complete**: Azure AD App Registration configured
+  - Client ID: 17a97781-0078-4478-8b4e-fe5dda9e2400
+  - API Permissions: Azure SQL Database user_impersonation
+  - Token acquisition validated
+  
+- ✅ **Task 1.2 Complete**: JWT Token Validation Middleware
+  - Created authentication module with TokenValidator and UserContext
+  - Integrated auth middleware into Express server
+  - All 6 test cases passed successfully
+  - Optional authentication mode (REQUIRE_AUTH=false) working
+  - Dependencies installed: jsonwebtoken, jwks-rsa, @types/jsonwebtoken
+  - Documentation: TASK_1.2_SUMMARY.md and TASK_1.2_QUICKSTART.md
+
+**Current Status**: Ready to begin Task 1.3 (OBO Token Exchange)
