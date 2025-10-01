@@ -1,5 +1,6 @@
 import sql from "mssql";
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { ToolContext, isValidAuthContext } from './ToolContext.js';
 
 export class UpdateDataTool implements Tool {
   [key: string]: any;
@@ -24,7 +25,7 @@ export class UpdateDataTool implements Tool {
     required: ["tableName", "updates", "whereClause"],
   } as any;
 
-  async run(params: any) {
+  async run(params: any, context?: ToolContext) {
     let query: string | undefined;
     try {
       const { tableName, updates, whereClause } = params;
@@ -34,7 +35,26 @@ export class UpdateDataTool implements Tool {
         throw new Error("WHERE clause is required for security reasons");
       }
 
-      const request = new sql.Request();
+      // Get connection pool (per-user if authenticated, global if not)
+      let request: sql.Request;
+      
+      if (isValidAuthContext(context) && context) {
+        // Authenticated mode: use per-user pool with RLS enforcement
+        const userId = context.userIdentity.oid || context.userIdentity.userId;
+        const userEmail = context.userIdentity.email || context.userIdentity.upn;
+        console.log(`[UpdateDataTool] Using per-user pool for ${userEmail} (OID: ${userId})`);
+        
+        const pool = await context.poolManager.getPoolForUser(
+          userId,
+          context.userIdentity.sqlToken!,
+          context.userIdentity.tokenExpiry!
+        );
+        request = pool.request();
+      } else {
+        // Non-authenticated mode: use global pool (backward compatibility)
+        console.log(`[UpdateDataTool] Using global pool (no authentication)`);
+        request = new sql.Request();
+      }
       
       // Build SET clause with parameterized queries for security
       const setClause = Object.keys(updates)

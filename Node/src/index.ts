@@ -34,10 +34,14 @@ import { ListTableTool } from "./tools/ListTableTool.js";
 import { DropTableTool } from "./tools/DropTableTool.js";
 import { DefaultAzureCredential, InteractiveBrowserCredential } from "@azure/identity";
 import { DescribeTableTool } from "./tools/DescribeTableTool.js";
+import { ToolContext } from "./tools/ToolContext.js";
 
 // Auth imports
 import { TokenValidator, TokenValidationConfig } from "./auth/index.js";
 import { createAuthMiddleware } from "./middleware/index.js";
+
+// Database imports
+import { TokenExchangeService, SqlConfigService, ConnectionPoolManager, PoolManagerConfig } from "./database/index.js";
 
 // MSSQL Database connection configuration
 // const credential = new DefaultAzureCredential();
@@ -227,6 +231,9 @@ async function runHttpServer() {
   
   // Initialize token validator (optional - only if AZURE_CLIENT_ID is set)
   let tokenValidator: TokenValidator | null = null;
+  let tokenExchangeService: TokenExchangeService | null = null;
+  let sqlConfigService: SqlConfigService | null = null;
+  let poolManager: ConnectionPoolManager | null = null;
   const requireAuth = process.env.REQUIRE_AUTH === 'true';
   
   if (process.env.AZURE_TENANT_ID && process.env.AZURE_CLIENT_ID) {
@@ -242,6 +249,62 @@ async function runHttpServer() {
     
     tokenValidator = new TokenValidator(tokenConfig);
     console.log('[AUTH] Token validator initialized successfully');
+    
+    // Initialize token exchange service for OBO flow
+    if (process.env.AZURE_CLIENT_SECRET) {
+      console.log('[OBO] Initializing token exchange service');
+      
+      tokenExchangeService = new TokenExchangeService({
+        tenantId: process.env.AZURE_TENANT_ID,
+        clientId: process.env.AZURE_CLIENT_ID,
+        clientSecret: process.env.AZURE_CLIENT_SECRET
+      });
+      
+      // Initialize SQL config service
+      sqlConfigService = new SqlConfigService(tokenExchangeService, {
+        serverName: process.env.SERVER_NAME!,
+        databaseName: process.env.DATABASE_NAME!,
+        trustServerCertificate: process.env.TRUST_SERVER_CERTIFICATE?.toLowerCase() === 'true',
+        connectionTimeout: process.env.CONNECTION_TIMEOUT ? parseInt(process.env.CONNECTION_TIMEOUT, 10) : 30
+      });
+      
+      console.log('[OBO] Token exchange service initialized successfully');
+      
+      // Initialize Connection Pool Manager
+      console.log('[PoolManager] Initializing connection pool manager');
+      
+      const poolManagerConfig: PoolManagerConfig = {
+        maxUsers: parseInt(process.env.MAX_CONCURRENT_USERS || '100', 10),
+        idleTimeout: parseInt(process.env.POOL_IDLE_TIMEOUT || '300000', 10), // 5 minutes default
+        cleanupInterval: parseInt(process.env.POOL_CLEANUP_INTERVAL || '60000', 10), // 1 minute default
+        tokenRefreshBuffer: 5 * 60 * 1000, // 5 minutes before expiry
+        sqlConfig: {
+          server: process.env.SERVER_NAME!,
+          database: process.env.DATABASE_NAME!,
+          port: 1433,
+          trustServerCertificate: process.env.TRUST_SERVER_CERTIFICATE?.toLowerCase() === 'true',
+          connectionTimeout: process.env.CONNECTION_TIMEOUT ? parseInt(process.env.CONNECTION_TIMEOUT, 10) : 30
+        }
+      };
+      
+      poolManager = new ConnectionPoolManager(poolManagerConfig);
+      poolManager.startCleanup();
+      
+      console.log('[PoolManager] Connection pool manager initialized successfully');
+      
+      // Start periodic token cleanup (every 5 minutes)
+      setInterval(() => {
+        const cleaned = tokenExchangeService!.cleanupExpiredTokens();
+        if (cleaned > 0) {
+          console.log(`[OBO] Periodic cleanup removed ${cleaned} expired tokens`);
+        }
+      }, 5 * 60 * 1000);
+      
+    } else {
+      console.log('[OBO] Token exchange not configured (missing AZURE_CLIENT_SECRET)');
+      console.log('[OBO] Per-user authentication will not be available');
+    }
+    
   } else {
     console.log('[AUTH] Token validator not configured (missing AZURE_TENANT_ID or AZURE_CLIENT_ID)');
     if (requireAuth) {
@@ -286,6 +349,29 @@ async function runHttpServer() {
   // Health check endpoint
   app.get('/health', (req, res) => {
     res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+  });
+  
+  // Pool manager health endpoint
+  app.get('/health/pools', (req, res) => {
+    if (!poolManager) {
+      res.status(503).json({
+        status: 'unavailable',
+        message: 'Connection pool manager not initialized',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+    
+    const stats = poolManager.getPoolStats();
+    res.json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      poolManager: {
+        ...stats,
+        memoryEstimate: `${Math.round(stats.activePools * 50)} MB (estimated)`,
+        utilizationPercent: Math.round((stats.activePools / 100) * 100) // Assuming maxUsers=100
+      }
+    });
   });
   
   // Legacy REST endpoints for tools (backward compatibility)
@@ -454,28 +540,66 @@ async function runHttpServer() {
           const toolArgs = params.arguments || {};
 
           try {
+            // Create ToolContext if user is authenticated and services are available
+            let toolContext: ToolContext | undefined = undefined;
+            
+            if ((req as any).userContext && tokenExchangeService && poolManager) {
+              const userContext = (req as any).userContext;
+              const userAccessToken = userContext.getAccessToken();
+              const userId = userContext.getUserId();
+              
+              try {
+                // Get SQL token via OBO flow
+                const sqlTokenInfo = await tokenExchangeService.getSqlTokenWithExpiry(userAccessToken, userId);
+                
+                // Create ToolContext with user identity and pool manager
+                toolContext = {
+                  userIdentity: {
+                    userId: userId,
+                    oid: userId,
+                    upn: userContext.getUPN(),
+                    email: userContext.getUPN(),
+                    name: userContext.getName(),
+                    tenantId: userContext.getTenantId(),
+                    accessToken: userAccessToken,
+                    sqlToken: sqlTokenInfo.token,
+                    tokenExpiry: sqlTokenInfo.expiresOn,
+                    groups: userContext.getGroups(),
+                    roles: userContext.getRoles(),
+                    claims: userContext.getAllClaims()
+                  },
+                  poolManager: poolManager
+                };
+                
+                console.log(`[HTTP] Created ToolContext for user ${userContext.getUPN()} (OID: ${userId})`);
+              } catch (error) {
+                console.error(`[HTTP] Failed to create ToolContext for ${userContext.getUPN()}:`, error);
+                // Fall back to no context (backward compatibility)
+              }
+            }
+
             let toolResult;
             switch (toolName) {
               case insertDataTool.name:
-                toolResult = await insertDataTool.run(toolArgs);
+                toolResult = await insertDataTool.run(toolArgs, toolContext);
                 break;
               case readDataTool.name:
-                toolResult = await readDataTool.run(toolArgs);
+                toolResult = await readDataTool.run(toolArgs, toolContext);
                 break;
               case updateDataTool.name:
-                toolResult = await updateDataTool.run(toolArgs);
+                toolResult = await updateDataTool.run(toolArgs, toolContext);
                 break;
               case createTableTool.name:
-                toolResult = await createTableTool.run(toolArgs);
+                toolResult = await createTableTool.run(toolArgs, toolContext);
                 break;
               case createIndexTool.name:
-                toolResult = await createIndexTool.run(toolArgs);
+                toolResult = await createIndexTool.run(toolArgs, toolContext);
                 break;
               case listTableTool.name:
-                toolResult = await listTableTool.run(toolArgs);
+                toolResult = await listTableTool.run(toolArgs, toolContext);
                 break;
               case dropTableTool.name:
-                toolResult = await dropTableTool.run(toolArgs);
+                toolResult = await dropTableTool.run(toolArgs, toolContext);
                 break;
               case describeTableTool.name:
                 if (!toolArgs || typeof toolArgs.tableName !== "string") {
@@ -490,7 +614,7 @@ async function runHttpServer() {
                   });
                   return;
                 }
-                toolResult = await describeTableTool.run(toolArgs as { tableName: string });
+                toolResult = await describeTableTool.run(toolArgs as { tableName: string }, toolContext);
                 break;
               default:
                 res.status(400).json({
@@ -644,6 +768,15 @@ async function runHttpServer() {
   // Graceful shutdown
   const shutdown = async () => {
     console.log('Shutting down gracefully...');
+    
+    // Close all connection pools
+    if (poolManager) {
+      try {
+        await poolManager.closeAllPools();
+      } catch (error) {
+        console.error('Error closing connection pools:', error);
+      }
+    }
     
     // Close all active transports
     for (const transport of activeTransports.values()) {

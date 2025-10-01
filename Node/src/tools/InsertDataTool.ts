@@ -1,5 +1,7 @@
 import sql from "mssql";
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { ToolContext, isValidAuthContext } from './ToolContext.js';
+
 export class InsertDataTool implements Tool {
   [key: string]: any;
   name = "insert_data";
@@ -69,7 +71,7 @@ IMPORTANT RULES:
     },
     required: ["tableName", "data"],
   } as any;
-  async run(params: any) {
+  async run(params: any, context?: ToolContext) {
     try {
       const { tableName, data } = params;
       // Check if data is an array (multiple records) or single object
@@ -93,7 +95,28 @@ IMPORTANT RULES:
         }
       }
       const columns = firstRecordColumns.join(", ");
-      const request = new sql.Request();
+      
+      // Get connection pool (per-user if authenticated, global if not)
+      let request: sql.Request;
+      
+      if (isValidAuthContext(context) && context) {
+        // Authenticated mode: use per-user pool with RLS enforcement
+        const userId = context.userIdentity.oid || context.userIdentity.userId;
+        const userEmail = context.userIdentity.email || context.userIdentity.upn;
+        console.log(`[InsertDataTool] Using per-user pool for ${userEmail} (OID: ${userId})`);
+        
+        const pool = await context.poolManager.getPoolForUser(
+          userId,
+          context.userIdentity.sqlToken!,
+          context.userIdentity.tokenExpiry!
+        );
+        request = pool.request();
+      } else {
+        // Non-authenticated mode: use global pool (backward compatibility)
+        console.log(`[InsertDataTool] Using global pool (no authentication)`);
+        request = new sql.Request();
+      }
+      
       if (isMultipleRecords) {
         // Multiple records insert using VALUES clause - works for 1 or more records
         const valueClauses: string[] = [];

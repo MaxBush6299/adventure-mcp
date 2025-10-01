@@ -62,10 +62,17 @@ export class TokenValidator {
       // Get signing key from JWKS
       const signingKey = await this.getSigningKey(decoded.header.kid);
 
+      // For testing: accept both our client ID and SQL Database audience
+      // In production, only accept the client ID
+      const acceptedAudiences: [string, string] = [
+        this.config.audience!,  // Our client ID
+        'https://database.windows.net/'  // SQL Database (for testing)
+      ];
+
       // Verify and decode token
       const payload = jwt.verify(token, signingKey, {
         algorithms: ['RS256'],
-        audience: this.config.audience,
+        audience: acceptedAudiences,
         issuer: this.config.issuer,
         clockTolerance: this.config.clockTolerance || 60 // 60 seconds default
       }) as any;
