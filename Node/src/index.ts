@@ -32,7 +32,7 @@ import { CreateTableTool } from "./tools/CreateTableTool.js";
 import { CreateIndexTool } from "./tools/CreateIndexTool.js";
 import { ListTableTool } from "./tools/ListTableTool.js";
 import { DropTableTool } from "./tools/DropTableTool.js";
-import { DefaultAzureCredential, InteractiveBrowserCredential } from "@azure/identity";
+import { DefaultAzureCredential, ManagedIdentityCredential, InteractiveBrowserCredential } from "@azure/identity";
 import { DescribeTableTool } from "./tools/DescribeTableTool.js";
 import { ToolContext } from "./tools/ToolContext.js";
 
@@ -53,12 +53,12 @@ let globalTokenExpiresOn: Date | null = null;
 
 // Function to create SQL config with fresh access token, returns token and expiry
 export async function createSqlConfig(): Promise<{ config: sql.config, token: string, expiresOn: Date }> {
-  // Use DefaultAzureCredential for container environments (Managed Identity)
+  // Use ManagedIdentityCredential explicitly for container environments
   // Falls back to InteractiveBrowserCredential for local development
-  console.log(`[AUTH] Environment: ${process.env.NODE_ENV}, using ${process.env.NODE_ENV === 'production' ? 'DefaultAzureCredential' : 'InteractiveBrowserCredential'}`);
+  console.log(`[AUTH] Environment: ${process.env.NODE_ENV}, using ${process.env.NODE_ENV === 'production' ? 'ManagedIdentityCredential' : 'InteractiveBrowserCredential'}`);
   
   const credential = process.env.NODE_ENV === 'production' 
-    ? new DefaultAzureCredential()
+    ? new ManagedIdentityCredential()
     : new InteractiveBrowserCredential({
         redirectUri: 'http://localhost'
       });
@@ -66,8 +66,8 @@ export async function createSqlConfig(): Promise<{ config: sql.config, token: st
   let accessToken;
   try {
     console.log('[AUTH] Acquiring Azure AD token for SQL Database...');
-    // Try the correct scope for Azure SQL Database
-    accessToken = await credential.getToken('https://database.windows.net/');
+    // Use the correct scope with /.default suffix for managed identity
+    accessToken = await credential.getToken('https://database.windows.net/.default');
     console.log(`[AUTH] Token acquired successfully, expires at: ${accessToken?.expiresOnTimestamp ? new Date(accessToken.expiresOnTimestamp).toISOString() : 'unknown'}`);
     console.log(`[AUTH] Token length: ${accessToken?.token?.length || 0} characters`);
   } catch (error) {
@@ -89,8 +89,10 @@ export async function createSqlConfig(): Promise<{ config: sql.config, token: st
         enableArithAbort: true // Sometimes needed for Azure SQL
       },
       authentication: {
-        type: 'azure-active-directory-default',
-        options: {}
+        type: 'azure-active-directory-access-token',
+        options: {
+          token: accessToken?.token!
+        }
       },
       connectionTimeout: connectionTimeout * 1000, // convert seconds to milliseconds
     },
@@ -239,14 +241,18 @@ async function runHttpServer() {
   if (process.env.AZURE_TENANT_ID && process.env.AZURE_CLIENT_ID) {
     console.log('[AUTH] Initializing token validator with Azure AD configuration');
     
+    // Use AZURE_EXPECTED_AUDIENCE if set (e.g., "api://client-id"), otherwise fall back to AZURE_CLIENT_ID
+    const expectedAudience = process.env.AZURE_EXPECTED_AUDIENCE || process.env.AZURE_CLIENT_ID;
+    
     const tokenConfig: TokenValidationConfig = {
       tenantId: process.env.AZURE_TENANT_ID,
-      audience: process.env.AZURE_CLIENT_ID,
+      audience: expectedAudience,
       issuer: `https://sts.windows.net/${process.env.AZURE_TENANT_ID}/`,
       validateSignature: true,
       clockTolerance: 60
     };
     
+    console.log(`[AUTH] Expected audience: ${expectedAudience}`);
     tokenValidator = new TokenValidator(tokenConfig);
     console.log('[AUTH] Token validator initialized successfully');
     
@@ -321,12 +327,14 @@ async function runHttpServer() {
   }));
   app.use(express.json());
   
-  // Add auth middleware if configured
+  // Add optional auth middleware if configured
+  // This will parse tokens if present but NOT block requests without tokens
+  // We'll check authentication on specific routes/methods that need protection
   if (tokenValidator) {
-    console.log(`[AUTH] Adding auth middleware (required: ${requireAuth})`);
+    console.log(`[AUTH] Adding optional auth middleware (will be required on specific routes)`);
     app.use(createAuthMiddleware({
       tokenValidator,
-      required: requireAuth,
+      required: false,  // Changed: Allow anonymous access by default
       logErrors: true
     }));
   }
@@ -429,15 +437,17 @@ async function runHttpServer() {
         sqlDatabase: process.env.SQL_DATABASE || 'Not configured'
       },
       endpoints: [
-        { path: "/health", method: "GET", description: "Health check endpoint" },
-        { path: "/mcp/tools", method: "GET", description: "List available tools" },
-        { path: "/tools", method: "GET", description: "List available tools (alternative)" },
-        { path: "/tools/list", method: "GET", description: "List available tools (alternative 2)" },
-        { path: "/mcp/capabilities", method: "GET", description: "Server capabilities" },
-        { path: "/mcp/introspect", method: "GET", description: "Full server introspection" },
-        { path: "/mcp", method: "POST", description: "MCP JSON-RPC 2.0 endpoint" },
-        { path: "/mcp/sse", method: "GET", description: "MCP SSE connection endpoint (legacy)" },
-        { path: "/mcp/message", method: "POST", description: "MCP message handling endpoint" }
+        { path: "/health", method: "GET", description: "Health check endpoint", authentication: "none" },
+        { path: "/health/pools", method: "GET", description: "Pool manager health check", authentication: "none" },
+        { path: "/mcp/tools", method: "GET", description: "List available tools", authentication: "none" },
+        { path: "/tools", method: "GET", description: "List available tools (alternative)", authentication: "none" },
+        { path: "/tools/list", method: "GET", description: "List available tools (alternative 2)", authentication: "none" },
+        { path: "/mcp/capabilities", method: "GET", description: "Server capabilities", authentication: "none" },
+        { path: "/mcp/introspect", method: "GET", description: "Full server introspection", authentication: "none" },
+        { path: "/mcp", method: "GET", description: "MCP server information", authentication: "none" },
+        { path: "/mcp", method: "POST", description: "MCP JSON-RPC 2.0 endpoint", authentication: requireAuth ? "required for tools/call" : "optional" },
+        { path: "/mcp/sse", method: "GET", description: "MCP SSE connection endpoint (legacy)", authentication: "optional" },
+        { path: "/mcp/message", method: "POST", description: "MCP message handling endpoint", authentication: "optional" }
       ]
     });
   });
@@ -458,10 +468,10 @@ async function runHttpServer() {
       tools: getToolsList(),
       transport: "http",
       endpoints: {
-        "initialize": "POST /mcp with JSON-RPC 2.0",
-        "tools/list": "GET /mcp or POST /mcp with JSON-RPC 2.0",
-        "tools/call": "POST /mcp with JSON-RPC 2.0", 
-        "ping": "POST /mcp with JSON-RPC 2.0"
+        "initialize": "POST /mcp with JSON-RPC 2.0 (public)",
+        "tools/list": "GET /mcp or POST /mcp with JSON-RPC 2.0 (public)",
+        "tools/call": requireAuth ? "POST /mcp with JSON-RPC 2.0 (requires authentication)" : "POST /mcp with JSON-RPC 2.0 (optional authentication)", 
+        "ping": "POST /mcp with JSON-RPC 2.0 (public)"
       }
     });
   });
@@ -484,6 +494,21 @@ async function runHttpServer() {
             data: 'Missing or invalid jsonrpc version or method'
           },
           id: id || null
+        });
+        return;
+      }
+
+      // Check authentication for tools/call when REQUIRE_AUTH is enabled
+      if (method === 'tools/call' && requireAuth && !(req as any).userContext) {
+        console.error(`[${new Date().toISOString()}] tools/call requires authentication but no user context present`);
+        res.status(401).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: 'Authentication required',
+            data: 'tools/call method requires a valid Bearer token in Authorization header'
+          },
+          id
         });
         return;
       }

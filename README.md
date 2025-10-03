@@ -47,6 +47,7 @@ Perfect for Azure AI Foundry agents and production environments.
 - Docker Desktop installed
 - Azure Container Registry
 - Azure SQL Database
+- **SQL Server admin access** (for managed identity setup)
 
 #### Quick Deploy
 ```bash
@@ -56,6 +57,10 @@ Perfect for Azure AI Foundry agents and production environments.
 # Or use bash (Linux/Mac)
 ./deploy/deploy.sh
 ```
+
+⚠️ **IMPORTANT**: After deployment, you **MUST** configure managed identity permissions. See:
+- **[Node/docs/MANAGED_IDENTITY_SETUP.md](Node/docs/MANAGED_IDENTITY_SETUP.md)** - Complete setup guide
+- **[Node/docs/QUICK_REFERENCE.md](Node/docs/QUICK_REFERENCE.md)** - Quick reference card
 
 See [Container Deployment Guide](#container-deployment-guide) for detailed instructions.
 
@@ -88,6 +93,17 @@ For local development, testing, or stdio-based clients like Claude Desktop.
    ```bash
    npm start
    ```
+
+## Documentation 📚
+
+### Deployment & Setup
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Complete deployment guide with Azure AI Projects configuration
+- **[Node/docs/MANAGED_IDENTITY_SETUP.md](Node/docs/MANAGED_IDENTITY_SETUP.md)** - Managed identity setup (REQUIRED for production)
+- **[Node/docs/QUICK_REFERENCE.md](Node/docs/QUICK_REFERENCE.md)** - Quick reference commands
+
+### Troubleshooting
+- **[Node/docs/TROUBLESHOOTING.md](Node/docs/TROUBLESHOOTING.md)** - Common issues and solutions
+- **[Node/docs/FIX_SUMMARY.md](Node/docs/FIX_SUMMARY.md)** - Recent authentication fix details
 
 ## Configuration Setup
 

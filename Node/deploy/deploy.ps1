@@ -27,6 +27,21 @@ param(
     [string]$ImageTag = "latest",
     
     [Parameter(Mandatory=$false)]
+    [string]$AzureTenantId = "",
+    
+    [Parameter(Mandatory=$false)]
+    [string]$AzureClientId = "",
+    
+    [Parameter(Mandatory=$false)]
+    [string]$AzureClientSecret = "",
+    
+    [Parameter(Mandatory=$false)]
+    [string]$AzureExpectedAudience = "",
+    
+    [Parameter(Mandatory=$false)]
+    [bool]$RequireAuth = $true,
+    
+    [Parameter(Mandatory=$false)]
     [switch]$Help
 )
 
@@ -35,6 +50,9 @@ if (-not $ResourceGroup) { $ResourceGroup = "" }
 if (-not $AcrName) { $AcrName = "" }
 if (-not $SqlServerName) { $SqlServerName = "" }
 if (-not $SqlDatabaseName) { $SqlDatabaseName = "" }
+if (-not $AzureTenantId) { $AzureTenantId = "" }
+if (-not $AzureClientId) { $AzureClientId = "" }
+if (-not $AzureClientSecret) { $AzureClientSecret = "" }
 
 # Helper functions
 function Write-Info {
@@ -72,6 +90,9 @@ function Test-Parameters {
     if (-not $AcrName) { $missing += "AcrName" }
     if (-not $SqlServerName) { $missing += "SqlServerName" }
     if (-not $SqlDatabaseName) { $missing += "SqlDatabaseName" }
+    if (-not $AzureTenantId) { $missing += "AzureTenantId" }
+    if (-not $AzureClientId) { $missing += "AzureClientId" }
+    if (-not $AzureClientSecret) { $missing += "AzureClientSecret" }
     
     if ($missing.Count -gt 0) {
         Write-Error "Missing required parameters: $($missing -join ', ')"
@@ -145,7 +166,12 @@ function Deploy-Container {
             sqlDatabaseName=$SqlDatabaseName `
             readOnlyMode=$false `
             trustServerCertificate=$false `
-            connectionTimeout=30
+            connectionTimeout=30 `
+            azureTenantId=$AzureTenantId `
+            azureClientId=$AzureClientId `
+            azureClientSecret=$AzureClientSecret `
+            azureExpectedAudience=$AzureExpectedAudience `
+            requireAuth=$RequireAuth
     
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Deployment failed"
@@ -198,31 +224,40 @@ function Show-Usage {
     Write-Host "MSSQL MCP Server Deployment Script" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Usage:" -ForegroundColor Yellow
-    Write-Host "  .\deploy.ps1 -ResourceGroup <rg> -AcrName <acr> -SqlServerName <server> -SqlDatabaseName <db>"
+    Write-Host "  .\deploy.ps1 -ResourceGroup <rg> -AcrName <acr> -SqlServerName <server> -SqlDatabaseName <db> \"
+    Write-Host "               -AzureTenantId <tenant> -AzureClientId <client> -AzureClientSecret <secret>"
     Write-Host ""
     Write-Host "Parameters:" -ForegroundColor Yellow
-    Write-Host "  -ResourceGroup      Azure resource group name (required)"
-    Write-Host "  -AcrName           Azure Container Registry name (required)"
-    Write-Host "  -SqlServerName     SQL Server name, e.g., myserver.database.windows.net (required)"
-    Write-Host "  -SqlDatabaseName   SQL Database name (required)"
-    Write-Host "  -Location          Azure region (default: eastus)"
+    Write-Host "  -ResourceGroup       Azure resource group name (required)"
+    Write-Host "  -AcrName            Azure Container Registry name (required)"
+    Write-Host "  -SqlServerName      SQL Server name, e.g., myserver.database.windows.net (required)"
+    Write-Host "  -SqlDatabaseName    SQL Database name (required)"
+    Write-Host "  -AzureTenantId      Azure AD Tenant ID (required)"
+    Write-Host "  -AzureClientId      Azure AD Client/Application ID (required)"
+    Write-Host "  -AzureClientSecret  Azure AD Client Secret (required)"
+    Write-Host "  -Location           Azure region (default: eastus)"
     Write-Host "  -ContainerGroupName Container group name (default: mssql-mcp-server)"
-    Write-Host "  -ImageName         Docker image name (default: mssql-mcp-server)"
-    Write-Host "  -ImageTag          Docker image tag (default: latest)"
-    Write-Host "  -Help              Show this help message"
+    Write-Host "  -ImageName          Docker image name (default: mssql-mcp-server)"
+    Write-Host "  -ImageTag           Docker image tag (default: latest)"
+    Write-Host "  -RequireAuth        Require authentication (default: true)"
+    Write-Host "  -Help               Show this help message"
     Write-Host ""
     Write-Host "Prerequisites:" -ForegroundColor Yellow
     Write-Host "  - Azure CLI installed and logged in (az login)"
     Write-Host "  - Docker Desktop installed and running"
     Write-Host "  - Azure Container Registry created"
     Write-Host "  - SQL Server and Database created"
+    Write-Host "  - Azure AD App Registration configured (see docs/TASK_1.1_AZURE_AD_SETUP.md)"
     Write-Host ""
     Write-Host "Example:" -ForegroundColor Green
-    Write-Host "  .\deploy.ps1 -ResourceGroup 'my-rg' -AcrName 'myacr' -SqlServerName 'myserver.database.windows.net' -SqlDatabaseName 'mydb'"
+    Write-Host "  .\deploy.ps1 -ResourceGroup 'my-rg' -AcrName 'myacr' \"
+    Write-Host "               -SqlServerName 'myserver.database.windows.net' -SqlDatabaseName 'mydb' \"
+    Write-Host "               -AzureTenantId '2e9b0657-...' -AzureClientId '17a97781-...' \"
+    Write-Host "               -AzureClientSecret 'your-secret'"
 }
 
 # Main execution
-if ($Help -or (-not $ResourceGroup -and -not $AcrName -and -not $SqlServerName -and -not $SqlDatabaseName)) {
+if ($Help -or (-not $ResourceGroup -and -not $AcrName -and -not $SqlServerName -and -not $SqlDatabaseName -and -not $AzureTenantId -and -not $AzureClientId -and -not $AzureClientSecret)) {
     Show-Usage
     exit 0
 }

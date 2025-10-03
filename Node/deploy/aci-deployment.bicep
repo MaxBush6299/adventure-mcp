@@ -36,6 +36,22 @@ param trustServerCertificate bool = false
 @description('Connection timeout in seconds')
 param connectionTimeout int = 30
 
+@description('Azure AD Tenant ID for authentication')
+param azureTenantId string
+
+@description('Azure AD Client ID (Application ID)')
+param azureClientId string
+
+@description('Azure AD Client Secret')
+@secure()
+param azureClientSecret string
+
+@description('Require authentication (set to true for production)')
+param requireAuth bool = true
+
+@description('Azure AD Expected Audience (API identifier)')
+param azureExpectedAudience string
+
 // Variables
 var containerName = 'mssql-mcp-server'
 var imageRegistryCredentials = [
@@ -97,6 +113,26 @@ resource containerGroup 'Microsoft.ContainerInstance/containerGroups@2023-05-01'
             {
               name: 'CONNECTION_TIMEOUT'
               value: string(connectionTimeout)
+            }
+            {
+              name: 'AZURE_TENANT_ID'
+              value: azureTenantId
+            }
+            {
+              name: 'AZURE_CLIENT_ID'
+              value: azureClientId
+            }
+            {
+              name: 'AZURE_CLIENT_SECRET'
+              secureValue: azureClientSecret
+            }
+            {
+              name: 'AZURE_EXPECTED_AUDIENCE'
+              value: azureExpectedAudience
+            }
+            {
+              name: 'REQUIRE_AUTH'
+              value: requireAuth ? 'true' : 'false'
             }
           ]
           resources: {

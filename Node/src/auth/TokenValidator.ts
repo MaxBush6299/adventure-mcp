@@ -62,11 +62,11 @@ export class TokenValidator {
       // Get signing key from JWKS
       const signingKey = await this.getSigningKey(decoded.header.kid);
 
-      // For testing: accept both our client ID and SQL Database audience
-      // In production, only accept the client ID
+      // Accept configured audience (e.g., "api://client-id" or just "client-id")
+      // Also accept SQL Database audience for backward compatibility during testing
       const acceptedAudiences: [string, string] = [
-        this.config.audience!,  // Our client ID
-        'https://database.windows.net/'  // SQL Database (for testing)
+        this.config.audience!,  // Configured audience (from AZURE_EXPECTED_AUDIENCE or AZURE_CLIENT_ID)
+        'https://database.windows.net/'  // SQL Database (for OBO token exchange)
       ];
 
       // Verify and decode token
