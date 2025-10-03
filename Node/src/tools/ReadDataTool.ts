@@ -1,5 +1,6 @@
 import sql from "mssql";
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { ToolContext, isValidAuthContext } from './ToolContext.js';
 
 export class ReadDataTool implements Tool {
   [key: string]: any;
@@ -198,9 +199,10 @@ export class ReadDataTool implements Tool {
   /**
    * Executes the validated SQL query
    * @param params Query parameters
+   * @param context Optional tool context with user identity and pool manager
    * @returns Query execution result
    */
-  async run(params: any) {
+  async run(params: any, context?: ToolContext) {
     try {
       const { query } = params;
       
@@ -215,11 +217,49 @@ export class ReadDataTool implements Tool {
         };
       }
 
+      // Get connection pool (per-user if authenticated, global if not)
+      let pool: sql.ConnectionPool;
+      
+      if (isValidAuthContext(context) && context) {
+        // Authenticated mode: use per-user pool with RLS enforcement
+        const userId = context.userIdentity.oid || context.userIdentity.userId;
+        const userEmail = context.userIdentity.email || context.userIdentity.upn;
+        console.log(`[ReadDataTool] Using per-user pool for ${userEmail} (OID: ${userId})`);
+        
+        pool = await context.poolManager.getPoolForUser(
+          userId,
+          context.userIdentity.sqlToken!,
+          context.userIdentity.tokenExpiry!
+        );
+      } else {
+        // Non-authenticated mode: use global pool (backward compatibility)
+        console.log(`[ReadDataTool] Using global pool (no authentication)`);
+        // Use a simple request which will use the global default connection
+        // This maintains backward compatibility with existing code
+        const request = new sql.Request();
+        const result = await request.query(query);
+        
+        // Sanitize and return (skip the pool-based code below)
+        const sanitizedData = this.sanitizeResult(result.recordset);
+        
+        return {
+          success: true,
+          message: `Query executed successfully. Retrieved ${sanitizedData.length} record(s)${
+            result.recordset.length !== sanitizedData.length 
+              ? ` (limited from ${result.recordset.length} total records)` 
+              : ''
+          }`,
+          data: sanitizedData,
+          recordCount: sanitizedData.length,
+          totalRecords: result.recordset.length
+        };
+      }
+
       // Log the query for audit purposes (in production, consider more secure logging)
       console.log(`Executing validated SELECT query: ${query.substring(0, 200)}${query.length > 200 ? '...' : ''}`);
 
-      // Execute the query
-      const request = new sql.Request();
+      // Execute the query using the selected pool
+      const request = pool.request();
       const result = await request.query(query);
       
       // Sanitize the result

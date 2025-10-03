@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 
-// Load environment variables
+// Load environment variables from parent directory (repository root)
 import * as dotenv from "dotenv";
-dotenv.config();
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Load .env from repository root (parent of Node directory)
+dotenv.config({ path: join(__dirname, '../../.env') });
 
 // External imports
 import sql from "mssql";
@@ -25,8 +32,16 @@ import { CreateTableTool } from "./tools/CreateTableTool.js";
 import { CreateIndexTool } from "./tools/CreateIndexTool.js";
 import { ListTableTool } from "./tools/ListTableTool.js";
 import { DropTableTool } from "./tools/DropTableTool.js";
-import { DefaultAzureCredential, InteractiveBrowserCredential } from "@azure/identity";
+import { DefaultAzureCredential, ManagedIdentityCredential, InteractiveBrowserCredential } from "@azure/identity";
 import { DescribeTableTool } from "./tools/DescribeTableTool.js";
+import { ToolContext } from "./tools/ToolContext.js";
+
+// Auth imports
+import { TokenValidator, TokenValidationConfig } from "./auth/index.js";
+import { createAuthMiddleware } from "./middleware/index.js";
+
+// Database imports
+import { TokenExchangeService, SqlConfigService, ConnectionPoolManager, PoolManagerConfig } from "./database/index.js";
 
 // MSSQL Database connection configuration
 // const credential = new DefaultAzureCredential();
@@ -38,12 +53,12 @@ let globalTokenExpiresOn: Date | null = null;
 
 // Function to create SQL config with fresh access token, returns token and expiry
 export async function createSqlConfig(): Promise<{ config: sql.config, token: string, expiresOn: Date }> {
-  // Use DefaultAzureCredential for container environments (Managed Identity)
+  // Use ManagedIdentityCredential explicitly for container environments
   // Falls back to InteractiveBrowserCredential for local development
-  console.log(`[AUTH] Environment: ${process.env.NODE_ENV}, using ${process.env.NODE_ENV === 'production' ? 'DefaultAzureCredential' : 'InteractiveBrowserCredential'}`);
+  console.log(`[AUTH] Environment: ${process.env.NODE_ENV}, using ${process.env.NODE_ENV === 'production' ? 'ManagedIdentityCredential' : 'InteractiveBrowserCredential'}`);
   
   const credential = process.env.NODE_ENV === 'production' 
-    ? new DefaultAzureCredential()
+    ? new ManagedIdentityCredential()
     : new InteractiveBrowserCredential({
         redirectUri: 'http://localhost'
       });
@@ -51,8 +66,8 @@ export async function createSqlConfig(): Promise<{ config: sql.config, token: st
   let accessToken;
   try {
     console.log('[AUTH] Acquiring Azure AD token for SQL Database...');
-    // Try the correct scope for Azure SQL Database
-    accessToken = await credential.getToken('https://database.windows.net/');
+    // Use the correct scope with /.default suffix for managed identity
+    accessToken = await credential.getToken('https://database.windows.net/.default');
     console.log(`[AUTH] Token acquired successfully, expires at: ${accessToken?.expiresOnTimestamp ? new Date(accessToken.expiresOnTimestamp).toISOString() : 'unknown'}`);
     console.log(`[AUTH] Token length: ${accessToken?.token?.length || 0} characters`);
   } catch (error) {
@@ -74,8 +89,10 @@ export async function createSqlConfig(): Promise<{ config: sql.config, token: st
         enableArithAbort: true // Sometimes needed for Azure SQL
       },
       authentication: {
-        type: 'azure-active-directory-default',
-        options: {}
+        type: 'azure-active-directory-access-token',
+        options: {
+          token: accessToken?.token!
+        }
       },
       connectionTimeout: connectionTimeout * 1000, // convert seconds to milliseconds
     },
@@ -214,6 +231,94 @@ async function runHttpServer() {
   const app = express();
   const port = process.env.PORT || 8080;
   
+  // Initialize token validator (optional - only if AZURE_CLIENT_ID is set)
+  let tokenValidator: TokenValidator | null = null;
+  let tokenExchangeService: TokenExchangeService | null = null;
+  let sqlConfigService: SqlConfigService | null = null;
+  let poolManager: ConnectionPoolManager | null = null;
+  const requireAuth = process.env.REQUIRE_AUTH === 'true';
+  
+  if (process.env.AZURE_TENANT_ID && process.env.AZURE_CLIENT_ID) {
+    console.log('[AUTH] Initializing token validator with Azure AD configuration');
+    
+    // Use AZURE_EXPECTED_AUDIENCE if set (e.g., "api://client-id"), otherwise fall back to AZURE_CLIENT_ID
+    const expectedAudience = process.env.AZURE_EXPECTED_AUDIENCE || process.env.AZURE_CLIENT_ID;
+    
+    const tokenConfig: TokenValidationConfig = {
+      tenantId: process.env.AZURE_TENANT_ID,
+      audience: expectedAudience,
+      issuer: `https://sts.windows.net/${process.env.AZURE_TENANT_ID}/`,
+      validateSignature: true,
+      clockTolerance: 60
+    };
+    
+    console.log(`[AUTH] Expected audience: ${expectedAudience}`);
+    tokenValidator = new TokenValidator(tokenConfig);
+    console.log('[AUTH] Token validator initialized successfully');
+    
+    // Initialize token exchange service for OBO flow
+    if (process.env.AZURE_CLIENT_SECRET) {
+      console.log('[OBO] Initializing token exchange service');
+      
+      tokenExchangeService = new TokenExchangeService({
+        tenantId: process.env.AZURE_TENANT_ID,
+        clientId: process.env.AZURE_CLIENT_ID,
+        clientSecret: process.env.AZURE_CLIENT_SECRET
+      });
+      
+      // Initialize SQL config service
+      sqlConfigService = new SqlConfigService(tokenExchangeService, {
+        serverName: process.env.SERVER_NAME!,
+        databaseName: process.env.DATABASE_NAME!,
+        trustServerCertificate: process.env.TRUST_SERVER_CERTIFICATE?.toLowerCase() === 'true',
+        connectionTimeout: process.env.CONNECTION_TIMEOUT ? parseInt(process.env.CONNECTION_TIMEOUT, 10) : 30
+      });
+      
+      console.log('[OBO] Token exchange service initialized successfully');
+      
+      // Initialize Connection Pool Manager
+      console.log('[PoolManager] Initializing connection pool manager');
+      
+      const poolManagerConfig: PoolManagerConfig = {
+        maxUsers: parseInt(process.env.MAX_CONCURRENT_USERS || '100', 10),
+        idleTimeout: parseInt(process.env.POOL_IDLE_TIMEOUT || '300000', 10), // 5 minutes default
+        cleanupInterval: parseInt(process.env.POOL_CLEANUP_INTERVAL || '60000', 10), // 1 minute default
+        tokenRefreshBuffer: 5 * 60 * 1000, // 5 minutes before expiry
+        sqlConfig: {
+          server: process.env.SERVER_NAME!,
+          database: process.env.DATABASE_NAME!,
+          port: 1433,
+          trustServerCertificate: process.env.TRUST_SERVER_CERTIFICATE?.toLowerCase() === 'true',
+          connectionTimeout: process.env.CONNECTION_TIMEOUT ? parseInt(process.env.CONNECTION_TIMEOUT, 10) : 30
+        }
+      };
+      
+      poolManager = new ConnectionPoolManager(poolManagerConfig);
+      poolManager.startCleanup();
+      
+      console.log('[PoolManager] Connection pool manager initialized successfully');
+      
+      // Start periodic token cleanup (every 5 minutes)
+      setInterval(() => {
+        const cleaned = tokenExchangeService!.cleanupExpiredTokens();
+        if (cleaned > 0) {
+          console.log(`[OBO] Periodic cleanup removed ${cleaned} expired tokens`);
+        }
+      }, 5 * 60 * 1000);
+      
+    } else {
+      console.log('[OBO] Token exchange not configured (missing AZURE_CLIENT_SECRET)');
+      console.log('[OBO] Per-user authentication will not be available');
+    }
+    
+  } else {
+    console.log('[AUTH] Token validator not configured (missing AZURE_TENANT_ID or AZURE_CLIENT_ID)');
+    if (requireAuth) {
+      console.error('[AUTH] ERROR: REQUIRE_AUTH is true but auth is not configured!');
+      throw new Error('REQUIRE_AUTH is enabled but Azure AD configuration is missing');
+    }
+  }
+  
   // Middleware
   app.use(cors({
     origin: '*', // Allow all origins as requested
@@ -221,6 +326,18 @@ async function runHttpServer() {
     allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control']
   }));
   app.use(express.json());
+  
+  // Add optional auth middleware if configured
+  // This will parse tokens if present but NOT block requests without tokens
+  // We'll check authentication on specific routes/methods that need protection
+  if (tokenValidator) {
+    console.log(`[AUTH] Adding optional auth middleware (will be required on specific routes)`);
+    app.use(createAuthMiddleware({
+      tokenValidator,
+      required: false,  // Changed: Allow anonymous access by default
+      logErrors: true
+    }));
+  }
   
   // Add request timeout middleware
   app.use((req, res, next) => {
@@ -240,6 +357,29 @@ async function runHttpServer() {
   // Health check endpoint
   app.get('/health', (req, res) => {
     res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+  });
+  
+  // Pool manager health endpoint
+  app.get('/health/pools', (req, res) => {
+    if (!poolManager) {
+      res.status(503).json({
+        status: 'unavailable',
+        message: 'Connection pool manager not initialized',
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+    
+    const stats = poolManager.getPoolStats();
+    res.json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      poolManager: {
+        ...stats,
+        memoryEstimate: `${Math.round(stats.activePools * 50)} MB (estimated)`,
+        utilizationPercent: Math.round((stats.activePools / 100) * 100) // Assuming maxUsers=100
+      }
+    });
   });
   
   // Legacy REST endpoints for tools (backward compatibility)
@@ -297,15 +437,17 @@ async function runHttpServer() {
         sqlDatabase: process.env.SQL_DATABASE || 'Not configured'
       },
       endpoints: [
-        { path: "/health", method: "GET", description: "Health check endpoint" },
-        { path: "/mcp/tools", method: "GET", description: "List available tools" },
-        { path: "/tools", method: "GET", description: "List available tools (alternative)" },
-        { path: "/tools/list", method: "GET", description: "List available tools (alternative 2)" },
-        { path: "/mcp/capabilities", method: "GET", description: "Server capabilities" },
-        { path: "/mcp/introspect", method: "GET", description: "Full server introspection" },
-        { path: "/mcp", method: "POST", description: "MCP JSON-RPC 2.0 endpoint" },
-        { path: "/mcp/sse", method: "GET", description: "MCP SSE connection endpoint (legacy)" },
-        { path: "/mcp/message", method: "POST", description: "MCP message handling endpoint" }
+        { path: "/health", method: "GET", description: "Health check endpoint", authentication: "none" },
+        { path: "/health/pools", method: "GET", description: "Pool manager health check", authentication: "none" },
+        { path: "/mcp/tools", method: "GET", description: "List available tools", authentication: "none" },
+        { path: "/tools", method: "GET", description: "List available tools (alternative)", authentication: "none" },
+        { path: "/tools/list", method: "GET", description: "List available tools (alternative 2)", authentication: "none" },
+        { path: "/mcp/capabilities", method: "GET", description: "Server capabilities", authentication: "none" },
+        { path: "/mcp/introspect", method: "GET", description: "Full server introspection", authentication: "none" },
+        { path: "/mcp", method: "GET", description: "MCP server information", authentication: "none" },
+        { path: "/mcp", method: "POST", description: "MCP JSON-RPC 2.0 endpoint", authentication: requireAuth ? "required for tools/call" : "optional" },
+        { path: "/mcp/sse", method: "GET", description: "MCP SSE connection endpoint (legacy)", authentication: "optional" },
+        { path: "/mcp/message", method: "POST", description: "MCP message handling endpoint", authentication: "optional" }
       ]
     });
   });
@@ -326,10 +468,10 @@ async function runHttpServer() {
       tools: getToolsList(),
       transport: "http",
       endpoints: {
-        "initialize": "POST /mcp with JSON-RPC 2.0",
-        "tools/list": "GET /mcp or POST /mcp with JSON-RPC 2.0",
-        "tools/call": "POST /mcp with JSON-RPC 2.0", 
-        "ping": "POST /mcp with JSON-RPC 2.0"
+        "initialize": "POST /mcp with JSON-RPC 2.0 (public)",
+        "tools/list": "GET /mcp or POST /mcp with JSON-RPC 2.0 (public)",
+        "tools/call": requireAuth ? "POST /mcp with JSON-RPC 2.0 (requires authentication)" : "POST /mcp with JSON-RPC 2.0 (optional authentication)", 
+        "ping": "POST /mcp with JSON-RPC 2.0 (public)"
       }
     });
   });
@@ -352,6 +494,21 @@ async function runHttpServer() {
             data: 'Missing or invalid jsonrpc version or method'
           },
           id: id || null
+        });
+        return;
+      }
+
+      // Check authentication for tools/call when REQUIRE_AUTH is enabled
+      if (method === 'tools/call' && requireAuth && !(req as any).userContext) {
+        console.error(`[${new Date().toISOString()}] tools/call requires authentication but no user context present`);
+        res.status(401).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: 'Authentication required',
+            data: 'tools/call method requires a valid Bearer token in Authorization header'
+          },
+          id
         });
         return;
       }
@@ -408,28 +565,66 @@ async function runHttpServer() {
           const toolArgs = params.arguments || {};
 
           try {
+            // Create ToolContext if user is authenticated and services are available
+            let toolContext: ToolContext | undefined = undefined;
+            
+            if ((req as any).userContext && tokenExchangeService && poolManager) {
+              const userContext = (req as any).userContext;
+              const userAccessToken = userContext.getAccessToken();
+              const userId = userContext.getUserId();
+              
+              try {
+                // Get SQL token via OBO flow
+                const sqlTokenInfo = await tokenExchangeService.getSqlTokenWithExpiry(userAccessToken, userId);
+                
+                // Create ToolContext with user identity and pool manager
+                toolContext = {
+                  userIdentity: {
+                    userId: userId,
+                    oid: userId,
+                    upn: userContext.getUPN(),
+                    email: userContext.getUPN(),
+                    name: userContext.getName(),
+                    tenantId: userContext.getTenantId(),
+                    accessToken: userAccessToken,
+                    sqlToken: sqlTokenInfo.token,
+                    tokenExpiry: sqlTokenInfo.expiresOn,
+                    groups: userContext.getGroups(),
+                    roles: userContext.getRoles(),
+                    claims: userContext.getAllClaims()
+                  },
+                  poolManager: poolManager
+                };
+                
+                console.log(`[HTTP] Created ToolContext for user ${userContext.getUPN()} (OID: ${userId})`);
+              } catch (error) {
+                console.error(`[HTTP] Failed to create ToolContext for ${userContext.getUPN()}:`, error);
+                // Fall back to no context (backward compatibility)
+              }
+            }
+
             let toolResult;
             switch (toolName) {
               case insertDataTool.name:
-                toolResult = await insertDataTool.run(toolArgs);
+                toolResult = await insertDataTool.run(toolArgs, toolContext);
                 break;
               case readDataTool.name:
-                toolResult = await readDataTool.run(toolArgs);
+                toolResult = await readDataTool.run(toolArgs, toolContext);
                 break;
               case updateDataTool.name:
-                toolResult = await updateDataTool.run(toolArgs);
+                toolResult = await updateDataTool.run(toolArgs, toolContext);
                 break;
               case createTableTool.name:
-                toolResult = await createTableTool.run(toolArgs);
+                toolResult = await createTableTool.run(toolArgs, toolContext);
                 break;
               case createIndexTool.name:
-                toolResult = await createIndexTool.run(toolArgs);
+                toolResult = await createIndexTool.run(toolArgs, toolContext);
                 break;
               case listTableTool.name:
-                toolResult = await listTableTool.run(toolArgs);
+                toolResult = await listTableTool.run(toolArgs, toolContext);
                 break;
               case dropTableTool.name:
-                toolResult = await dropTableTool.run(toolArgs);
+                toolResult = await dropTableTool.run(toolArgs, toolContext);
                 break;
               case describeTableTool.name:
                 if (!toolArgs || typeof toolArgs.tableName !== "string") {
@@ -444,7 +639,7 @@ async function runHttpServer() {
                   });
                   return;
                 }
-                toolResult = await describeTableTool.run(toolArgs as { tableName: string });
+                toolResult = await describeTableTool.run(toolArgs as { tableName: string }, toolContext);
                 break;
               default:
                 res.status(400).json({
@@ -599,6 +794,15 @@ async function runHttpServer() {
   const shutdown = async () => {
     console.log('Shutting down gracefully...');
     
+    // Close all connection pools
+    if (poolManager) {
+      try {
+        await poolManager.closeAllPools();
+      } catch (error) {
+        console.error('Error closing connection pools:', error);
+      }
+    }
+    
     // Close all active transports
     for (const transport of activeTransports.values()) {
       try {
@@ -625,8 +829,12 @@ runServer().catch((error) => {
 });
 
 // Connect to SQL only when handling a request
+// Look to add access token from https://learn.microsoft.com/en-us/azure/app-service/tutorial-connect-app-access-sql-database-as-user-dotnet
+// ensure scope is set properly. It is logon as user, see about providing offline access as scope. Token expires after 4 hours, offline access allows for the token to be refreshed.
+// offline access would enable alert functionality
 
-async function ensureSqlConnection() {
+
+async function ensureSqlConnection() { 
   console.log(`[SQL] Checking SQL connection status...`);
   
   // If we have a pool and it's connected, and the token is still valid, reuse it
@@ -645,7 +853,7 @@ async function ensureSqlConnection() {
   
   // Otherwise, get a new token and reconnect
   const { config, token, expiresOn } = await createSqlConfig();
-  globalAccessToken = token;
+  globalAccessToken = token; //Look to implement this as the entra ID token
   globalTokenExpiresOn = expiresOn;
 
   console.log(`[SQL] Config created - Server: ${config.server}, Database: ${config.database}`);

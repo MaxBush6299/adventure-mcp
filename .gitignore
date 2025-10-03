@@ -6,6 +6,15 @@ DEPLOYMENT.md
 .env.local
 .env.production
 
+# Deployment environment setup (contains secrets)
+deploy/setup-env.ps1
+**/setup-env.ps1
+
+# Test tokens
+test-user-token.txt
+test-app-token.txt
+*-token.txt
+
 # Logs
 logs
 *.log
