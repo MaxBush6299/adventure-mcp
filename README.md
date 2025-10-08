@@ -25,6 +25,18 @@ This MCP server supports two deployment modes:
 
 This server leverages the Model Context Protocol (MCP), a versatile framework that acts as a universal translator between AI models and databases. It supports multiple AI assistants including Claude Desktop, VS Code Agent, and Azure AI Foundry.
 
+### Architecture Overview 🏗️
+
+<div align="center">
+  <img src="./Networking diagram.jpg" alt="MCP Server Architecture" width="700"/>
+</div>
+
+The architecture shows:
+- **Entra ID (Azure AD)** authenticates users via HTTPS (Port 443) with token validation and OBO (On-Behalf-Of) exchange
+- **MCP Server** runs in Azure Container Instances, accessible via HTTP (Port 8080)
+- **Azure SQL Database** connects over TDS/TCP (Port 1433) with managed identity authentication
+- **Semantic Kernel Agent** can optionally connect for AI orchestration using Azure OpenAI
+
 ### What Can It Do? 📊
 
 - Run SQL Database queries by just asking questions in plain English
@@ -33,6 +45,39 @@ This server leverages the Model Context Protocol (MCP), a versatile framework th
 - Secure Azure AD authentication with Managed Identity
 - Real-time data interaction
 - Containerized deployment to Azure Container Instances
+
+### Available Tools 🔧
+
+The MCP server provides **15 powerful tools** for database operations and discovery:
+
+#### Data Operations
+| Tool | Description |
+|------|-------------|
+| `insert_data` | Insert records into tables with support for single or batch operations |
+| `read_data` | Execute SELECT queries to retrieve data from tables |
+| `update_data` | Update records using WHERE clauses for precise modifications |
+
+#### Schema Management
+| Tool | Description |
+|------|-------------|
+| `create_table` | Create new tables with specified columns and data types |
+| `create_index` | Create indexes on columns to improve query performance |
+| `drop_table` | Remove tables from the database |
+| `describe_table` | View table schema including columns, types, and constraints |
+
+#### Database Discovery
+| Tool | Description |
+|------|-------------|
+| `list_table` | List all tables in the database or filter by schema |
+| `list_stored_procedures` | Discover stored procedures with optional schema filtering |
+| `describe_stored_procedure` | View stored procedure parameters and definitions |
+| `list_views` | List all database views with optional schema filtering |
+| `list_functions` | List user-defined functions (scalar and table-valued) - **Essential for discovering RLS security predicates!** |
+| `list_schemas` | List all schemas in the database |
+| `get_table_row_count` | Get row counts for tables or entire schemas - **Useful for verifying Row-Level Security** |
+| `list_triggers` | List database triggers with optional table filtering |
+
+> **💡 Pro Tip**: The `list_functions` tool is particularly useful for discovering Row-Level Security (RLS) predicates like `fn_securitypredicate_*` functions that enforce per-user data isolation.
 
 ## Quick Start 🚀
 

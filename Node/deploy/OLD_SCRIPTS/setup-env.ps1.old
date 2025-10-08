@@ -1,0 +1,66 @@
+# Environment Variable Setup for Azure Deployment
+# Loads values from the .env file in the parent directory
+#
+# Usage: . .\deploy\setup-env.ps1
+
+# Get the script directory (works with dot-sourcing)
+$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$nodeDir = Split-Path -Parent $scriptDir
+$rootDir = Split-Path -Parent $nodeDir
+$envFile = Join-Path $rootDir ".env"
+
+if (-not (Test-Path $envFile)) {
+    Write-Host "[ERROR] .env file not found at: $envFile" -ForegroundColor Red
+    Write-Host "Please create a .env file or use setup-env-template.ps1" -ForegroundColor Yellow
+    exit 1
+}
+
+Write-Host "Loading environment variables from .env file..." -ForegroundColor Cyan
+
+# Parse .env file and set environment variables
+Get-Content $envFile | ForEach-Object {
+    $line = $_.Trim()
+    
+    # Skip comments and empty lines
+    if ($line -match '^#' -or $line -eq '') {
+        return
+    }
+    
+    # Parse KEY=VALUE
+    if ($line -match '^([^=]+)=(.*)$') {
+        $key = $matches[1].Trim()
+        $value = $matches[2].Trim()
+        
+        # Map .env variables to deployment variables
+        switch ($key) {
+            'AZURE_TENANT_ID' { $env:AZURE_TENANT_ID = $value }
+            'AZURE_CLIENT_ID' { $env:AZURE_CLIENT_ID = $value }
+            'AZURE_CLIENT_SECRET' { $env:AZURE_CLIENT_SECRET = $value }
+            'AZURE_EXPECTED_AUDIENCE' { $env:AZURE_EXPECTED_AUDIENCE = $value }
+            'SERVER_NAME' { $env:SQL_SERVER = $value }
+            'DATABASE_NAME' { $env:SQL_DATABASE = $value }
+        }
+    }
+}
+
+# Set Azure-specific deployment variables (not in .env)
+# These should be set based on your Azure resources
+$env:AZURE_RESOURCE_GROUP = 'rg-agentpractice4'  # Your existing resource group
+$env:AZURE_ACR_NAME = 'advenworks'  # Your existing ACR
+$env:AZURE_LOCATION = 'westus'  # Your preferred location
+$env:CONTAINER_GROUP_NAME = 'mssql-mcp-server'
+
+Write-Host "`n✅ Environment variables loaded successfully!" -ForegroundColor Green
+Write-Host "`nConfiguration:" -ForegroundColor Cyan
+Write-Host "  Resource Group:  $env:AZURE_RESOURCE_GROUP"
+Write-Host "  ACR Name:        $env:AZURE_ACR_NAME"
+Write-Host "  Location:        $env:AZURE_LOCATION"
+Write-Host "  Container Group: $env:CONTAINER_GROUP_NAME"
+Write-Host "  SQL Server:      $env:SQL_SERVER"
+Write-Host "  SQL Database:    $env:SQL_DATABASE"
+Write-Host "  Azure AD Tenant: $env:AZURE_TENANT_ID"
+Write-Host "  Azure AD Client: $env:AZURE_CLIENT_ID"
+Write-Host "  Client Secret:   [REDACTED]`n"
+
+Write-Host "Ready to deploy!" -ForegroundColor Green
+Write-Host "Run: .\deploy\quick-deploy.ps1`n" -ForegroundColor Cyan
