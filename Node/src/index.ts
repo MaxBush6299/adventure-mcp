@@ -32,8 +32,15 @@ import { CreateTableTool } from "./tools/CreateTableTool.js";
 import { CreateIndexTool } from "./tools/CreateIndexTool.js";
 import { ListTableTool } from "./tools/ListTableTool.js";
 import { DropTableTool } from "./tools/DropTableTool.js";
-import { DefaultAzureCredential, ManagedIdentityCredential, InteractiveBrowserCredential } from "@azure/identity";
 import { DescribeTableTool } from "./tools/DescribeTableTool.js";
+import { ListStoredProceduresTool } from "./tools/ListStoredProceduresTool.js";
+import { DescribeStoredProcedureTool } from "./tools/DescribeStoredProcedureTool.js";
+import { ListViewsTool } from "./tools/ListViewsTool.js";
+import { ListFunctionsTool } from "./tools/ListFunctionsTool.js";
+import { ListSchemasTool } from "./tools/ListSchemasTool.js";
+import { GetTableRowCountTool } from "./tools/GetTableRowCountTool.js";
+import { ListTriggersTool } from "./tools/ListTriggersTool.js";
+import { DefaultAzureCredential, ManagedIdentityCredential, InteractiveBrowserCredential } from "@azure/identity";
 import { ToolContext } from "./tools/ToolContext.js";
 
 // Auth imports
@@ -109,6 +116,13 @@ const createIndexTool = new CreateIndexTool();
 const listTableTool = new ListTableTool();
 const dropTableTool = new DropTableTool();
 const describeTableTool = new DescribeTableTool();
+const listStoredProceduresTool = new ListStoredProceduresTool();
+const describeStoredProcedureTool = new DescribeStoredProcedureTool();
+const listViewsTool = new ListViewsTool();
+const listFunctionsTool = new ListFunctionsTool();
+const listSchemasTool = new ListSchemasTool();
+const getTableRowCountTool = new GetTableRowCountTool();
+const listTriggersTool = new ListTriggersTool();
 
 const server = new Server(
   {
@@ -131,8 +145,8 @@ function getToolsList() {
   if (!cachedToolsList) {
     console.log('[CACHE] Building tools list cache...');
     const availableTools = isReadOnly
-      ? [listTableTool, readDataTool, describeTableTool]
-      : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool];
+      ? [listTableTool, readDataTool, describeTableTool, listStoredProceduresTool, describeStoredProcedureTool, listViewsTool, listFunctionsTool, listSchemasTool, getTableRowCountTool, listTriggersTool]
+      : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool, listStoredProceduresTool, describeStoredProcedureTool, listViewsTool, listFunctionsTool, listSchemasTool, getTableRowCountTool, listTriggersTool];
     
     cachedToolsList = availableTools.map(tool => ({
       name: tool.name,
@@ -148,8 +162,8 @@ function getToolsList() {
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const tools = isReadOnly
-    ? [listTableTool, readDataTool, describeTableTool] // todo: add searchDataTool to the list of tools available in readonly mode once implemented
-    : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool]; // add all new tools here
+    ? [listTableTool, readDataTool, describeTableTool, listStoredProceduresTool, describeStoredProcedureTool, listViewsTool, listFunctionsTool, listSchemasTool, getTableRowCountTool, listTriggersTool]
+    : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool, listStoredProceduresTool, describeStoredProcedureTool, listViewsTool, listFunctionsTool, listSchemasTool, getTableRowCountTool, listTriggersTool];
   
   return { tools };
 });
@@ -188,6 +202,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
         result = await describeTableTool.run(args as { tableName: string });
+        break;
+      case listStoredProceduresTool.name:
+        result = await listStoredProceduresTool.run(args);
+        break;
+      case describeStoredProcedureTool.name:
+        if (!args || typeof args.procedureName !== "string") {
+          return {
+            content: [{ type: "text", text: `Missing or invalid 'procedureName' argument for describe_stored_procedure tool.` }],
+            isError: true,
+          };
+        }
+        result = await describeStoredProcedureTool.run(args);
+        break;
+      case listViewsTool.name:
+        result = await listViewsTool.run(args);
+        break;
+      case listFunctionsTool.name:
+        result = await listFunctionsTool.run(args);
+        break;
+      case listSchemasTool.name:
+        result = await listSchemasTool.run(args);
+        break;
+      case getTableRowCountTool.name:
+        result = await getTableRowCountTool.run(args);
+        break;
+      case listTriggersTool.name:
+        result = await listTriggersTool.run(args);
         break;
       default:
         return {
@@ -413,10 +454,6 @@ async function runHttpServer() {
 
   // MCP Introspection endpoint - provides complete server information
   app.get('/mcp/introspect', (req, res) => {
-    const availableTools = isReadOnly
-      ? [listTableTool, readDataTool, describeTableTool]
-      : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool];
-    
     res.json({
       server: {
         name: "MSSQL MCP Server",
@@ -426,11 +463,7 @@ async function runHttpServer() {
       capabilities: {
         tools: { listTools: true }
       },
-      tools: availableTools.map(tool => ({
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.inputSchema
-      })),
+      tools: getToolsList(),
       configuration: {
         readOnlyMode: isReadOnly,
         sqlServer: process.env.SQL_SERVER || 'Not configured',
@@ -640,6 +673,39 @@ async function runHttpServer() {
                   return;
                 }
                 toolResult = await describeTableTool.run(toolArgs as { tableName: string }, toolContext);
+                break;
+              case listStoredProceduresTool.name:
+                toolResult = await listStoredProceduresTool.run(toolArgs, toolContext);
+                break;
+              case describeStoredProcedureTool.name:
+                if (!toolArgs || typeof toolArgs.procedureName !== "string") {
+                  res.status(400).json({
+                    jsonrpc: '2.0',
+                    error: {
+                      code: -32602,
+                      message: 'Invalid params',
+                      data: `Missing or invalid 'procedureName' argument for describe_stored_procedure tool.`
+                    },
+                    id
+                  });
+                  return;
+                }
+                toolResult = await describeStoredProcedureTool.run(toolArgs, toolContext);
+                break;
+              case listViewsTool.name:
+                toolResult = await listViewsTool.run(toolArgs, toolContext);
+                break;
+              case listFunctionsTool.name:
+                toolResult = await listFunctionsTool.run(toolArgs, toolContext);
+                break;
+              case listSchemasTool.name:
+                toolResult = await listSchemasTool.run(toolArgs, toolContext);
+                break;
+              case getTableRowCountTool.name:
+                toolResult = await getTableRowCountTool.run(toolArgs, toolContext);
+                break;
+              case listTriggersTool.name:
+                toolResult = await listTriggersTool.run(toolArgs, toolContext);
                 break;
               default:
                 res.status(400).json({
