@@ -40,6 +40,7 @@ import { ListFunctionsTool } from "./tools/ListFunctionsTool.js";
 import { ListSchemasTool } from "./tools/ListSchemasTool.js";
 import { GetTableRowCountTool } from "./tools/GetTableRowCountTool.js";
 import { ListTriggersTool } from "./tools/ListTriggersTool.js";
+import { GenerateSyntheticDataTool } from "./tools/GenerateSyntheticDataTool.js";
 import { DefaultAzureCredential, ManagedIdentityCredential, InteractiveBrowserCredential } from "@azure/identity";
 import { ToolContext } from "./tools/ToolContext.js";
 
@@ -123,6 +124,7 @@ const listFunctionsTool = new ListFunctionsTool();
 const listSchemasTool = new ListSchemasTool();
 const getTableRowCountTool = new GetTableRowCountTool();
 const listTriggersTool = new ListTriggersTool();
+const generateSyntheticDataTool = new GenerateSyntheticDataTool();
 
 const server = new Server(
   {
@@ -146,7 +148,7 @@ function getToolsList() {
     console.log('[CACHE] Building tools list cache...');
     const availableTools = isReadOnly
       ? [listTableTool, readDataTool, describeTableTool, listStoredProceduresTool, describeStoredProcedureTool, listViewsTool, listFunctionsTool, listSchemasTool, getTableRowCountTool, listTriggersTool]
-      : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool, listStoredProceduresTool, describeStoredProcedureTool, listViewsTool, listFunctionsTool, listSchemasTool, getTableRowCountTool, listTriggersTool];
+      : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool, listStoredProceduresTool, describeStoredProcedureTool, listViewsTool, listFunctionsTool, listSchemasTool, getTableRowCountTool, listTriggersTool, generateSyntheticDataTool];
     
     cachedToolsList = availableTools.map(tool => ({
       name: tool.name,
@@ -163,7 +165,7 @@ function getToolsList() {
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const tools = isReadOnly
     ? [listTableTool, readDataTool, describeTableTool, listStoredProceduresTool, describeStoredProcedureTool, listViewsTool, listFunctionsTool, listSchemasTool, getTableRowCountTool, listTriggersTool]
-    : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool, listStoredProceduresTool, describeStoredProcedureTool, listViewsTool, listFunctionsTool, listSchemasTool, getTableRowCountTool, listTriggersTool];
+    : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool, listStoredProceduresTool, describeStoredProcedureTool, listViewsTool, listFunctionsTool, listSchemasTool, getTableRowCountTool, listTriggersTool, generateSyntheticDataTool];
   
   return { tools };
 });
@@ -229,6 +231,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case listTriggersTool.name:
         result = await listTriggersTool.run(args);
+        break;
+      case generateSyntheticDataTool.name:
+        result = await generateSyntheticDataTool.run(args);
         break;
       default:
         return {
@@ -706,6 +711,9 @@ async function runHttpServer() {
                 break;
               case listTriggersTool.name:
                 toolResult = await listTriggersTool.run(toolArgs, toolContext);
+                break;
+              case generateSyntheticDataTool.name:
+                toolResult = await generateSyntheticDataTool.run(toolArgs, toolContext);
                 break;
               default:
                 res.status(400).json({

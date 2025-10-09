@@ -48,7 +48,7 @@ The architecture shows:
 
 ### Available Tools 🔧
 
-The MCP server provides **15 powerful tools** for database operations and discovery:
+The MCP server provides **16 powerful tools** for database operations and discovery:
 
 #### Data Operations
 | Tool | Description |
@@ -56,6 +56,7 @@ The MCP server provides **15 powerful tools** for database operations and discov
 | `insert_data` | Insert records into tables with support for single or batch operations |
 | `read_data` | Execute SELECT queries to retrieve data from tables |
 | `update_data` | Update records using WHERE clauses for precise modifications |
+| `generate_synthetic_data` | **NEW!** Generate realistic test data based on table schema - Perfect for testing, demos, and development |
 
 #### Schema Management
 | Tool | Description |
