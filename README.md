@@ -462,3 +462,171 @@ try { Invoke-RestMethod -Uri "http://$fqdn/mcp/tools" } catch { Write-Host "REST
 ```
 
 You now have a production-ready, containerized MCP server that enables AI agents to securely interact with your Azure SQL Database!
+
+---
+
+## 🚀 Roadmap & Planned Features
+
+We're continuously improving the MCP server! Here's what's coming next:
+
+### Version 1.2.0 (Planned) 🎯
+
+#### **Role-Based Access Control (RBAC) for Tools**
+**Status:** 📋 Planned | **Priority:** High | **Effort:** 6-8 hours
+
+Implement fine-grained security to control which tools users can access based on their Azure AD roles.
+
+**Key Features:**
+- **Role Extraction:** Extract roles from JWT token claims (app roles, groups, custom claims)
+- **Configurable Policies:** Define which roles can use which tools via JSON configuration
+- **Tool Filtering:** Users only see tools they have permission to use
+- **Authorization Checks:** Validate permissions before executing any tool
+- **Clear Error Messages:** "Access denied: User role 'DataReader' not authorized to use tool 'drop_table'"
+
+**Example Roles:**
+```typescript
+{
+  'SysAdmin': '*',           // All 16 tools
+  'DataReader': [            // Read-only tools
+    'read_data', 'list_table', 'describe_table', 
+    'list_views', 'get_table_row_count', ...
+  ],
+  'DataWriter': [            // Read/write tools
+    'read_data', 'insert_data', 'update_data',
+    'generate_synthetic_data', ...
+  ],
+  'SchemaAdmin': [           // Schema management
+    'create_table', 'drop_table', 'create_index', ...
+  ]
+}
+```
+
+**Benefits:**
+- ✅ Enforces principle of least privilege
+- ✅ Prevents unauthorized destructive operations
+- ✅ Improves compliance and auditability
+- ✅ Better user experience (only see relevant tools)
+- ✅ Configurable via environment variables or JSON files
+- ✅ Backward compatible (can be disabled)
+
+**Configuration:**
+```bash
+# Enable RBAC
+ENABLE_RBAC=true
+
+# Custom policy (optional)
+TOOL_ACCESS_POLICY_FILE=/app/config/tool-access-policy.json
+
+# Default role for users without roles
+DEFAULT_USER_ROLE=DataReader
+```
+
+---
+
+### Version 1.3.0 (Planned) 🔌
+
+#### **On-Premises SQL Server Support**
+**Status:** 📋 Planned | **Priority:** High | **Effort:** 8-12 hours
+
+Expand compatibility to hybrid and on-premises SQL Server environments with multiple authentication modes.
+
+**Key Features:**
+- **Multiple Auth Modes:**
+  - Azure AD (current) - OAuth 2.0 with token-based authentication
+  - SQL Authentication - Traditional username/password
+  - Windows Authentication - Domain-based authentication
+  
+- **Connection Strategy Pattern:**
+  - Per-user connection pools for Azure AD (RLS support)
+  - Shared connection pool for SQL Auth and Windows Auth
+  - Automatic strategy selection based on AUTH_MODE
+
+- **Flexible Configuration:**
+  ```bash
+  # Azure AD mode (current)
+  AUTH_MODE=azure-ad
+  
+  # SQL Authentication for on-prem
+  AUTH_MODE=sql-auth
+  SQL_AUTH_USERNAME=sa
+  SQL_AUTH_PASSWORD=YourPassword123!
+  
+  # Windows Authentication
+  AUTH_MODE=windows-auth
+  ```
+
+**Benefits:**
+- ✅ Connect to on-premises SQL Server instances
+- ✅ Support hybrid cloud/on-prem environments
+- ✅ No breaking changes (defaults to Azure AD mode)
+- ✅ Choose authentication method per deployment
+- ⚠️ RLS features only available in Azure AD mode
+
+---
+
+### Future Enhancements 💡
+
+#### **Synthetic Data Tool Improvements**
+- Integration with faker.js for even more realistic data
+- Foreign key awareness (generate related records automatically)
+- Custom data templates via JSON configuration
+- Data generation from existing row patterns
+- Performance optimization for 100K+ row datasets
+
+#### **Performance & Monitoring**
+- Connection health monitoring and auto-reconnection
+- Query performance metrics and telemetry
+- Configurable connection pool sizes
+- Query result caching
+- Admin dashboard for monitoring
+
+#### **Advanced Features**
+- Stored procedure execution with parameters
+- GraphQL endpoint as alternative to JSON-RPC
+- Time-based role assignments (temporary access)
+- Attribute-Based Access Control (ABAC)
+- Multi-tenancy support (database-per-tenant)
+- Certificate-based authentication
+
+---
+
+## 📚 Documentation
+
+For detailed information, check out our comprehensive documentation:
+
+- **[TODO.md](./Node/docs/TODO.md)** - Complete roadmap with implementation details
+- **[SYNTHETIC_DATA_IMPLEMENTATION.md](./Node/docs/SYNTHETIC_DATA_IMPLEMENTATION.md)** - Synthetic data tool guide
+- **[DEPLOYMENT_GUIDE.md](./Node/docs/DEPLOYMENT_GUIDE.md)** - Step-by-step deployment instructions
+- **[TROUBLESHOOTING.md](./Node/docs/TROUBLESHOOTING.md)** - Common issues and solutions
+- **[QUICK_REFERENCE.md](./Node/docs/QUICK_REFERENCE.md)** - Quick reference for all tools and features
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions! If you'd like to implement any of the planned features or have suggestions for new ones, please:
+
+1. Open an issue to discuss your proposed changes
+2. Submit a pull request with your implementation
+
+---
+
+## 📝 License
+
+See [LICENSE](./Node/LICENSE) file for details.
+
+---
+
+## 🎉 Recent Updates
+
+### October 9, 2025
+- ✅ **Added Synthetic Data Generation Tool** - Generate realistic test data with intelligent pattern matching (25+ column patterns)
+- ✅ **Deployed to Production** - All 16 tools verified and accessible in Azure Container Instances
+- ✅ **Updated Documentation** - Comprehensive guides for new features
+- ✅ **Improved Architecture Diagram** - Added networking diagram showing complete flow
+
+### Previous Updates
+- ✅ Added 7 database discovery tools (stored procedures, views, functions, schemas, triggers, row counts)
+- ✅ Fixed introspection endpoint caching issue
+- ✅ Consolidated deployment scripts for easier deployment
+- ✅ Enhanced README with complete tool reference table
