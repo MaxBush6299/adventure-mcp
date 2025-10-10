@@ -3,15 +3,80 @@ import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { ToolContext, isValidAuthContext } from './ToolContext.js';
 
 /**
- * Tool for generating synthetic test data based on table schema
+ * Column schema information
+ */
+interface ColumnSchema {
+  name: string;
+  type: string;
+  maxLength: number | null;
+  nullable: string;
+  defaultValue: string | null;
+  isIdentity: number;
+  numericPrecision: number | null;
+  numericScale: number | null;
+}
+
+/**
+ * Sample data for learning patterns
+ */
+interface SampleData {
+  [columnName: string]: any[];
+}
+
+/**
+ * Foreign key relationship information
+ */
+interface ForeignKeyInfo {
+  columnName: string;
+  referencedSchema: string;
+  referencedTable: string;
+  referencedColumn: string;
+  constraintName: string;
+}
+
+/**
+ * Cached parent IDs for foreign key columns
+ */
+interface ParentIDCache {
+  [key: string]: any[]; // key format: "schema.table.column"
+}
+
+/**
+ * Generation strategy
+ */
+enum GenerationStrategy {
+  SAMPLE_BASED = 'sample-based',
+  PATTERN_BASED = 'pattern-based',
+  RELATIONSHIP_BASED = 'relationship-based'
+}
+
+/**
+ * Tool for generating synthetic test data based on table schema and existing data patterns
+ * 
+ * HYBRID APPROACH:
+ * Phase 1: Sample-Based Learning - Learns from existing data to generate contextually similar data
+ * Phase 2: Relationship Awareness - Understands foreign keys and related tables (planned)
+ * Phase 3: LLM Enhancement - Optional AI-powered generation (planned)
+ * 
  * Useful for testing, development, and demonstrating database capabilities
  */
 export class GenerateSyntheticDataTool implements Tool {
   [key: string]: any;
   name = "generate_synthetic_data";
-  description = `Generates synthetic test data for a specified table based on its schema. 
-Automatically detects column types and generates appropriate realistic data. 
-Useful for testing Row-Level Security, performance testing, and development environments.`;
+  description = `Generates synthetic test data for a specified table using intelligent pattern learning. 
+  
+FEATURES:
+- Learns from existing data to match your domain (e.g., "widgets" not "software" for widget companies)
+- Automatically detects column types and relationships
+- Generates contextually appropriate data based on samples
+- Falls back to pattern-based generation for empty tables
+
+MODES:
+- With existing data: Learns vocabulary, patterns, and distributions from samples
+- Empty tables: Uses intelligent pattern matching based on column names
+- Related tables: Respects foreign key relationships (Phase 2)
+
+Useful for testing Row-Level Security, performance testing, customer demos, and development environments.`;
   
   inputSchema = {
     type: "object",
@@ -29,7 +94,17 @@ Useful for testing Row-Level Security, performance testing, and development envi
       dataProfile: {
         type: "string",
         enum: ["realistic", "random", "edge-cases"],
-        description: "Type of data to generate: 'realistic' (human-like names, emails, addresses), 'random' (pure random values), 'edge-cases' (nulls, boundary values, special characters)"
+        description: "Type of data to generate: 'realistic' (learns from existing data or uses smart patterns), 'random' (pure random values), 'edge-cases' (nulls, boundary values, special characters)"
+      },
+      learnFromExisting: {
+        type: "boolean",
+        description: "Whether to sample existing data and learn patterns (default: true). Set to false to use only pattern-based generation."
+      },
+      sampleSize: {
+        type: "number",
+        description: "Number of existing rows to sample for learning (default: 100, max: 1000). Only used if learnFromExisting is true.",
+        minimum: 10,
+        maximum: 1000
       }
     },
     required: ["tableName", "rowCount"],
@@ -37,7 +112,13 @@ Useful for testing Row-Level Security, performance testing, and development envi
 
   async run(params: any, context?: ToolContext) {
     try {
-      const { tableName, rowCount = 100, dataProfile = "realistic" } = params;
+      const { 
+        tableName, 
+        rowCount = 100, 
+        dataProfile = "realistic",
+        learnFromExisting = true,
+        sampleSize = 100
+      } = params;
       
       // Validate row count
       if (rowCount < 1 || rowCount > 10000) {
@@ -94,7 +175,7 @@ Useful for testing Row-Level Security, performance testing, and development envi
       request.input("table", sql.NVarChar, table);
       
       const schemaResult = await request.query(schemaQuery);
-      const columns = schemaResult.recordset;
+      const columns: ColumnSchema[] = schemaResult.recordset;
       
       if (columns.length === 0) {
         return {
@@ -105,7 +186,72 @@ Useful for testing Row-Level Security, performance testing, and development envi
       
       console.log(`[GenerateSyntheticDataTool] Found ${columns.length} columns in ${schema}.${table}`);
       
-      // Step 2: Generate synthetic data
+      // Step 2: Detect foreign key relationships (Phase 2)
+      console.log(`[GenerateSyntheticDataTool] Detecting foreign key relationships...`);
+      const foreignKeys = await this.detectForeignKeys(schema, table, context);
+      const parentIDCache: ParentIDCache = {};
+      
+      // Pre-fetch parent IDs for all FK columns
+      if (foreignKeys.length > 0) {
+        console.log(`[GenerateSyntheticDataTool] Pre-fetching parent IDs for ${foreignKeys.length} foreign key(s)...`);
+        for (const fk of foreignKeys) {
+          const cacheKey = `${fk.referencedSchema}.${fk.referencedTable}.${fk.referencedColumn}`;
+          
+          // Find the child column to get its SQL type
+          const childColumn = columns.find(col => col.name === fk.columnName);
+          
+          const parentIDs = await this.sampleParentIDs(
+            fk.referencedSchema,
+            fk.referencedTable,
+            fk.referencedColumn,
+            Math.max(sampleSize, 100), // At least 100 parent IDs
+            context
+          );
+          
+          if (parentIDs.length > 0) {
+            // Filter parent IDs to match child column type constraints
+            if (childColumn) {
+              const filteredIDs = parentIDs.filter(id => this.isValidForType(id, childColumn.type));
+              
+              if (filteredIDs.length > 0) {
+                parentIDCache[cacheKey] = filteredIDs;
+                console.log(`[GenerateSyntheticDataTool] Cached ${filteredIDs.length}/${parentIDs.length} parent IDs for ${fk.columnName} (type: ${childColumn.type})`);
+              } else {
+                console.warn(`[GenerateSyntheticDataTool] All ${parentIDs.length} parent IDs filtered out for ${fk.columnName} due to type constraints (${childColumn.type})`);
+              }
+            } else {
+              parentIDCache[cacheKey] = parentIDs;
+            }
+          }
+        }
+      }
+      
+      // Step 3: Determine generation strategy
+      let strategy: GenerationStrategy = GenerationStrategy.PATTERN_BASED;
+      let sampleData: SampleData | null = null;
+      
+      if (learnFromExisting && dataProfile === 'realistic') {
+        // Try to sample existing data
+        console.log(`[GenerateSyntheticDataTool] Attempting to learn from existing data (sample size: ${sampleSize})`);
+        sampleData = await this.sampleExistingData(schema, table, columns, sampleSize, context);
+        
+        if (sampleData && Object.keys(sampleData).length > 0) {
+          // If we also have FK relationships, use relationship-based strategy
+          if (foreignKeys.length > 0 && Object.keys(parentIDCache).length > 0) {
+            strategy = GenerationStrategy.RELATIONSHIP_BASED;
+            console.log(`[GenerateSyntheticDataTool] Strategy: RELATIONSHIP_BASED - combining sample learning with FK awareness`);
+          } else {
+            strategy = GenerationStrategy.SAMPLE_BASED;
+            console.log(`[GenerateSyntheticDataTool] Strategy: SAMPLE_BASED - learned patterns from ${Object.values(sampleData)[0]?.length || 0} existing rows`);
+          }
+        } else {
+          console.log(`[GenerateSyntheticDataTool] Strategy: PATTERN_BASED - no existing data found, using intelligent patterns`);
+        }
+      } else {
+        console.log(`[GenerateSyntheticDataTool] Strategy: PATTERN_BASED - learning disabled or non-realistic profile`);
+      }
+      
+      // Step 4: Generate synthetic data
       console.log(`[GenerateSyntheticDataTool] Generating ${rowCount} rows with profile: ${dataProfile}`);
       const syntheticRows: any[] = [];
       
@@ -115,7 +261,6 @@ Useful for testing Row-Level Security, performance testing, and development envi
         for (const col of columns) {
           // Skip identity columns (auto-generated by database)
           if (col.isIdentity === 1) {
-            console.log(`[GenerateSyntheticDataTool] Skipping identity column: ${col.name}`);
             continue;
           }
           
@@ -124,8 +269,42 @@ Useful for testing Row-Level Security, performance testing, and development envi
             continue;
           }
           
-          // Generate value based on data type and column name
-          row[col.name] = this.generateValue(col, i, dataProfile);
+          // Check if this column is a foreign key
+          const fkInfo = foreignKeys.find(fk => fk.columnName === col.name);
+          
+          if (fkInfo) {
+            // Generate FK value from parent table
+            const cacheKey = `${fkInfo.referencedSchema}.${fkInfo.referencedTable}.${fkInfo.referencedColumn}`;
+            const parentIDs = parentIDCache[cacheKey];
+            
+            if (parentIDs && parentIDs.length > 0) {
+              // Pick random parent ID
+              let value = parentIDs[Math.floor(Math.random() * parentIDs.length)];
+              row[col.name] = this.enforceTypeConstraints(value, col.type);
+              console.log(`[GenerateSyntheticDataTool] Generated FK value for ${col.name}: ${row[col.name]} (from ${parentIDs.length} parent options)`);
+            } else {
+              // No parent IDs available - fall back to regular generation
+              console.warn(`[GenerateSyntheticDataTool] No parent IDs for FK ${col.name}, falling back to pattern generation`);
+              let value;
+              if (strategy === GenerationStrategy.RELATIONSHIP_BASED || strategy === GenerationStrategy.SAMPLE_BASED) {
+                value = sampleData ? this.generateFromSample(col, i, sampleData, dataProfile) : this.generateValue(col, i, dataProfile);
+              } else {
+                value = this.generateValue(col, i, dataProfile);
+              }
+              row[col.name] = this.enforceTypeConstraints(value, col.type);
+            }
+          } else {
+            // Not a FK - generate based on strategy
+            let value;
+            if (strategy === GenerationStrategy.RELATIONSHIP_BASED || strategy === GenerationStrategy.SAMPLE_BASED) {
+              value = sampleData ? this.generateFromSample(col, i, sampleData, dataProfile) : this.generateValue(col, i, dataProfile);
+            } else {
+              value = this.generateValue(col, i, dataProfile);
+            }
+            const constrainedValue = this.enforceTypeConstraints(value, col.type);
+            console.log(`[GenerateSyntheticDataTool] Generated ${col.name} (${col.type}): ${value} -> ${constrainedValue}`);
+            row[col.name] = constrainedValue;
+          }
         }
         
         syntheticRows.push(row);
@@ -138,7 +317,7 @@ Useful for testing Row-Level Security, performance testing, and development envi
         };
       }
       
-      // Step 3: Insert data in batches
+      // Step 5: Insert data in batches
       console.log(`[GenerateSyntheticDataTool] Inserting data in batches of 100`);
       const batchSize = 100;
       let insertedCount = 0;
@@ -197,6 +376,22 @@ Useful for testing Row-Level Security, performance testing, and development envi
       
       console.log(`[GenerateSyntheticDataTool] Successfully inserted ${insertedCount} rows into ${schema}.${table}`);
       
+      // Build FK metadata for response
+      const foreignKeysHandled = foreignKeys
+        .filter(fk => {
+          const cacheKey = `${fk.referencedSchema}.${fk.referencedTable}.${fk.referencedColumn}`;
+          return parentIDCache[cacheKey] && parentIDCache[cacheKey].length > 0;
+        })
+        .map(fk => {
+          const cacheKey = `${fk.referencedSchema}.${fk.referencedTable}.${fk.referencedColumn}`;
+          return {
+            column: fk.columnName,
+            parentTable: `${fk.referencedSchema}.${fk.referencedTable}`,
+            parentColumn: fk.referencedColumn,
+            sampledValues: parentIDCache[cacheKey].length
+          };
+        });
+      
       return {
         success: true,
         message: `Successfully generated and inserted ${insertedCount} synthetic rows into ${schema}.${table}`,
@@ -205,8 +400,12 @@ Useful for testing Row-Level Security, performance testing, and development envi
           rowsGenerated: rowCount,
           rowsInserted: insertedCount,
           dataProfile: dataProfile,
+          generationStrategy: strategy,
+          learnedFromSamples: strategy === GenerationStrategy.SAMPLE_BASED || strategy === GenerationStrategy.RELATIONSHIP_BASED,
           columnsPopulated: Object.keys(syntheticRows[0]).length,
-          batchesProcessed: Math.ceil(syntheticRows.length / batchSize)
+          batchesProcessed: Math.ceil(syntheticRows.length / batchSize),
+          foreignKeysDetected: foreignKeys.length,
+          foreignKeysHandled: foreignKeysHandled
         }
       };
       
@@ -218,6 +417,363 @@ Useful for testing Row-Level Security, performance testing, and development envi
         error: error.toString()
       };
     }
+  }
+  
+  /**
+   * Sample existing data from the table to learn patterns
+   * Phase 1: Sample-Based Learning
+   */
+  private async sampleExistingData(
+    schema: string, 
+    table: string, 
+    columns: ColumnSchema[], 
+    sampleSize: number,
+    context?: ToolContext
+  ): Promise<SampleData | null> {
+    try {
+      // Get connection
+      let request: sql.Request;
+      if (isValidAuthContext(context) && context) {
+        const userId = context.userIdentity.oid || context.userIdentity.userId;
+        const pool = await context.poolManager.getPoolForUser(
+          userId,
+          context.userIdentity.sqlToken!,
+          context.userIdentity.tokenExpiry!
+        );
+        request = pool.request();
+      } else {
+        request = new sql.Request();
+      }
+      
+      // Build sample query (exclude identity columns)
+      const nonIdentityColumns = columns.filter(c => c.isIdentity !== 1);
+      if (nonIdentityColumns.length === 0) {
+        return null;
+      }
+      
+      const columnList = nonIdentityColumns.map(c => `[${c.name}]`).join(', ');
+      const sampleQuery = `
+        SELECT TOP ${sampleSize} ${columnList}
+        FROM [${schema}].[${table}]
+        ORDER BY NEWID()  -- Random sampling
+      `;
+      
+      console.log(`[GenerateSyntheticDataTool] Sampling up to ${sampleSize} rows from ${schema}.${table}`);
+      const result = await request.query(sampleQuery);
+      
+      if (result.recordset.length === 0) {
+        console.log(`[GenerateSyntheticDataTool] No existing data found in ${schema}.${table}`);
+        return null;
+      }
+      
+      // Organize samples by column
+      const sampleData: SampleData = {};
+      for (const col of nonIdentityColumns) {
+        sampleData[col.name] = result.recordset
+          .map(row => row[col.name])
+          .filter(val => val !== null && val !== undefined);
+      }
+      
+      // Remove columns with no data
+      Object.keys(sampleData).forEach(key => {
+        if (sampleData[key].length === 0) {
+          delete sampleData[key];
+        }
+      });
+      
+      if (Object.keys(sampleData).length === 0) {
+        return null;
+      }
+      
+      console.log(`[GenerateSyntheticDataTool] Sampled ${result.recordset.length} rows, learned patterns for ${Object.keys(sampleData).length} columns`);
+      return sampleData;
+      
+    } catch (error: any) {
+      console.error(`[GenerateSyntheticDataTool] Failed to sample existing data:`, error);
+      return null; // Fall back to pattern-based generation
+    }
+  }
+  
+  /**
+   * Detect foreign key relationships for a table (Phase 2: Relationship Awareness)
+   */
+  private async detectForeignKeys(
+    schema: string,
+    table: string,
+    context?: ToolContext
+  ): Promise<ForeignKeyInfo[]> {
+    try {
+      let request: sql.Request;
+      
+      // Get connection pool
+      if (isValidAuthContext(context) && context) {
+        const userId = context.userIdentity.oid || context.userIdentity.userId;
+        const pool = await context.poolManager.getPoolForUser(
+          userId,
+          context.userIdentity.sqlToken!,
+          context.userIdentity.tokenExpiry!
+        );
+        request = pool.request();
+      } else {
+        request = new sql.Request();
+      }
+      
+      // Query to detect foreign keys
+      const fkQuery = `
+        SELECT 
+          fk.name AS constraintName,
+          COL_NAME(fkc.parent_object_id, fkc.parent_column_id) AS columnName,
+          OBJECT_SCHEMA_NAME(fk.referenced_object_id) AS referencedSchema,
+          OBJECT_NAME(fk.referenced_object_id) AS referencedTable,
+          COL_NAME(fkc.referenced_object_id, fkc.referenced_column_id) AS referencedColumn
+        FROM sys.foreign_keys fk
+        INNER JOIN sys.foreign_key_columns fkc 
+          ON fk.object_id = fkc.constraint_object_id
+        WHERE OBJECT_SCHEMA_NAME(fk.parent_object_id) = @schema
+          AND OBJECT_NAME(fk.parent_object_id) = @table
+        ORDER BY fkc.constraint_column_id
+      `;
+      
+      request.input("schema", sql.NVarChar, schema);
+      request.input("table", sql.NVarChar, table);
+      
+      const result = await request.query(fkQuery);
+      const foreignKeys: ForeignKeyInfo[] = result.recordset.map(row => ({
+        columnName: row.columnName,
+        referencedSchema: row.referencedSchema,
+        referencedTable: row.referencedTable,
+        referencedColumn: row.referencedColumn,
+        constraintName: row.constraintName
+      }));
+      
+      if (foreignKeys.length > 0) {
+        console.log(`[GenerateSyntheticDataTool] Detected ${foreignKeys.length} foreign key(s) in ${schema}.${table}`);
+        foreignKeys.forEach(fk => {
+          console.log(`  - ${fk.columnName} → ${fk.referencedSchema}.${fk.referencedTable}.${fk.referencedColumn}`);
+        });
+      }
+      
+      return foreignKeys;
+      
+    } catch (error: any) {
+      console.error(`[GenerateSyntheticDataTool] Failed to detect foreign keys:`, error);
+      return []; // Return empty array on error
+    }
+  }
+  
+  /**
+   * Sample parent IDs for a foreign key relationship (Phase 2: Relationship Awareness)
+   */
+  private async sampleParentIDs(
+    parentSchema: string,
+    parentTable: string,
+    parentColumn: string,
+    sampleSize: number,
+    context?: ToolContext
+  ): Promise<any[]> {
+    try {
+      let request: sql.Request;
+      
+      // Get connection pool (respects RLS - only samples IDs user can see)
+      if (isValidAuthContext(context) && context) {
+        const userId = context.userIdentity.oid || context.userIdentity.userId;
+        const pool = await context.poolManager.getPoolForUser(
+          userId,
+          context.userIdentity.sqlToken!,
+          context.userIdentity.tokenExpiry!
+        );
+        request = pool.request();
+      } else {
+        request = new sql.Request();
+      }
+      
+      // Query to sample parent IDs
+      const parentQuery = `
+        SELECT DISTINCT TOP ${sampleSize} [${parentColumn}]
+        FROM [${parentSchema}].[${parentTable}]
+        WHERE [${parentColumn}] IS NOT NULL
+        ORDER BY NEWID()  -- Random sampling
+      `;
+      
+      console.log(`[GenerateSyntheticDataTool] Sampling up to ${sampleSize} parent IDs from ${parentSchema}.${parentTable}.${parentColumn}`);
+      const result = await request.query(parentQuery);
+      
+      const parentIDs = result.recordset.map(row => row[parentColumn]);
+      
+      if (parentIDs.length === 0) {
+        console.warn(`[GenerateSyntheticDataTool] No parent IDs found in ${parentSchema}.${parentTable}.${parentColumn} - FK will be skipped`);
+        return [];
+      }
+      
+      console.log(`[GenerateSyntheticDataTool] Sampled ${parentIDs.length} parent ID(s) from ${parentSchema}.${parentTable}.${parentColumn}`);
+      return parentIDs;
+      
+    } catch (error: any) {
+      console.error(`[GenerateSyntheticDataTool] Failed to sample parent IDs:`, error);
+      return []; // Return empty array on error
+    }
+  }
+  
+  /**
+   * Generate value from samples (Phase 1: Sample-Based Learning)
+   */
+  private generateFromSample(
+    column: ColumnSchema, 
+    index: number, 
+    sampleData: SampleData, 
+    profile: string
+  ): any {
+    const samples = sampleData[column.name];
+    
+    // If no samples for this column, fall back to pattern-based
+    if (!samples || samples.length === 0) {
+      return this.generateValue(column, index, profile);
+    }
+    
+    const colType = column.type.toLowerCase();
+    
+    // String columns: Learn vocabulary and generate variations
+    if (['varchar', 'nvarchar', 'char', 'nchar', 'text', 'ntext'].includes(colType)) {
+      return this.generateStringFromSamples(samples, index, column.maxLength || 50);
+    }
+    
+    // Numeric columns: Learn distribution and generate within range
+    if (['int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'float', 'real', 'money'].includes(colType)) {
+      return this.generateNumericFromSamples(samples);
+    }
+    
+    // Date columns: Learn date range and generate within it
+    if (['datetime', 'datetime2', 'date'].includes(colType)) {
+      return this.generateDateFromSamples(samples);
+    }
+    
+    // Boolean: Learn distribution
+    if (colType === 'bit') {
+      const trueCount = samples.filter(s => s === true || s === 1).length;
+      const probability = trueCount / samples.length;
+      return Math.random() < probability ? 1 : 0;
+    }
+    
+    // For other types, pick random sample
+    return samples[Math.floor(Math.random() * samples.length)];
+  }
+  
+  /**
+   * Generate string from samples with intelligent variations
+   */
+  private generateStringFromSamples(samples: any[], index: number, maxLength: number): string {
+    // Extract words/tokens from samples
+    const tokens = new Set<string>();
+    samples.forEach(sample => {
+      if (typeof sample === 'string') {
+        // Split on spaces, hyphens, underscores
+        const words = sample.split(/[\s\-_]+/);
+        words.forEach(word => {
+          if (word.length > 0) {
+            tokens.add(word);
+          }
+        });
+      }
+    });
+    
+    if (tokens.size === 0) {
+      // No tokens found, pick random sample
+      return samples[Math.floor(Math.random() * samples.length)];
+    }
+    
+    const tokenArray = Array.from(tokens);
+    
+    // Strategy 1: Pick random sample (70% of the time)
+    if (Math.random() < 0.7) {
+      return samples[Math.floor(Math.random() * samples.length)];
+    }
+    
+    // Strategy 2: Combine tokens to create variations (30% of the time)
+    const numTokens = 1 + Math.floor(Math.random() * Math.min(3, tokenArray.length));
+    const selectedTokens: string[] = [];
+    
+    for (let i = 0; i < numTokens; i++) {
+      const token = tokenArray[Math.floor(Math.random() * tokenArray.length)];
+      if (!selectedTokens.includes(token)) {
+        selectedTokens.push(token);
+      }
+    }
+    
+    let generated = selectedTokens.join(' ');
+    
+    // Ensure we don't exceed max length
+    if (generated.length > maxLength) {
+      generated = generated.substring(0, maxLength);
+    }
+    
+    return generated || samples[0]; // Fallback to first sample if generation fails
+  }
+  
+  /**
+   * Generate numeric value from samples (learns distribution)
+   */
+  private generateNumericFromSamples(samples: any[]): number {
+    const numbers = samples.filter(s => typeof s === 'number' && !isNaN(s));
+    
+    if (numbers.length === 0) {
+      return 0;
+    }
+    
+    // Calculate min, max, and mean
+    const min = Math.min(...numbers);
+    const max = Math.max(...numbers);
+    const mean = numbers.reduce((a, b) => a + b, 0) / numbers.length;
+    
+    // 70% of the time, pick from actual samples
+    if (Math.random() < 0.7) {
+      return numbers[Math.floor(Math.random() * numbers.length)];
+    }
+    
+    // 30% of the time, generate within learned range
+    // Use normal distribution around mean
+    const stdDev = Math.sqrt(
+      numbers.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / numbers.length
+    );
+    
+    // Generate value using Box-Muller transform for normal distribution
+    const u1 = Math.random();
+    const u2 = Math.random();
+    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    let generated = mean + z * stdDev;
+    
+    // Clamp to observed range
+    generated = Math.max(min, Math.min(max, generated));
+    
+    // Round if samples are integers
+    const isInteger = numbers.every(n => Number.isInteger(n));
+    return isInteger ? Math.round(generated) : parseFloat(generated.toFixed(2));
+  }
+  
+  /**
+   * Generate date from samples (learns date range)
+   */
+  private generateDateFromSamples(samples: any[]): Date {
+    const dates = samples
+      .map(s => new Date(s))
+      .filter(d => d instanceof Date && !isNaN(d.getTime()));
+    
+    if (dates.length === 0) {
+      return new Date();
+    }
+    
+    // 70% of the time, pick from actual samples
+    if (Math.random() < 0.7) {
+      return dates[Math.floor(Math.random() * dates.length)];
+    }
+    
+    // 30% of the time, generate within learned range
+    const timestamps = dates.map(d => d.getTime());
+    const minTime = Math.min(...timestamps);
+    const maxTime = Math.max(...timestamps);
+    
+    // Generate random time within range
+    const randomTime = minTime + Math.random() * (maxTime - minTime);
+    return new Date(randomTime);
   }
   
   /**
@@ -291,6 +847,70 @@ Useful for testing Row-Level Security, performance testing, and development envi
       default:
         request.input(paramName, sql.NVarChar, value?.toString());
     }
+  }
+  
+  /**
+   * Check if value is valid for SQL data type (for filtering parent IDs)
+   */
+  private isValidForType(value: any, sqlType: string): boolean {
+    if (value === null || value === undefined) {
+      return false;
+    }
+    
+    const type = sqlType.toLowerCase();
+    const numValue = Number(value);
+    
+    if (isNaN(numValue)) {
+      return true; // Non-numeric types, assume valid
+    }
+    
+    // Numeric type constraints
+    if (type === 'tinyint') {
+      return numValue >= 0 && numValue <= 255 && Number.isInteger(numValue);
+    }
+    if (type === 'smallint') {
+      return numValue >= 0 && numValue <= 65535 && Number.isInteger(numValue);
+    }
+    if (type === 'int') {
+      return numValue >= -2147483648 && numValue <= 2147483647 && Number.isInteger(numValue);
+    }
+    if (type === 'bigint') {
+      return Number.isSafeInteger(numValue);
+    }
+    
+    return true; // Unknown type, assume valid
+  }
+  
+  /**
+   * Enforce SQL data type constraints on generated values (for clamping generated data)
+   */
+  private enforceTypeConstraints(value: any, sqlType: string): any {
+    if (value === null || value === undefined) {
+      return value;
+    }
+    
+    const type = sqlType.toLowerCase();
+    
+    // Numeric type constraints
+    if (type === 'tinyint') {
+      // TINYINT: 0 to 255
+      return Math.max(0, Math.min(255, Math.round(value)));
+    }
+    if (type === 'smallint') {
+      // SMALLINT: mssql library expects 0 to 65535 (unsigned)
+      return Math.max(0, Math.min(65535, Math.round(value)));
+    }
+    if (type === 'int') {
+      // INT: -2147483648 to 2147483647
+      return Math.max(-2147483648, Math.min(2147483647, Math.round(value)));
+    }
+    if (type === 'bigint') {
+      // BIGINT: -9223372036854775808 to 9223372036854775807
+      // JavaScript safe integer range
+      return Math.max(Number.MIN_SAFE_INTEGER, Math.min(Number.MAX_SAFE_INTEGER, Math.round(value)));
+    }
+    
+    return value;
   }
   
   /**

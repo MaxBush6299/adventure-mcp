@@ -387,13 +387,14 @@ async function runHttpServer() {
   
   // Add request timeout middleware
   app.use((req, res, next) => {
-    // Set a 10-second timeout for all requests (Azure AI Projects expects fast responses)
-    res.setTimeout(10000, () => {
+    // Configurable timeout for requests (Phase 2 FK detection needs more time)
+    const requestTimeout = parseInt(process.env.REQUEST_TIMEOUT || '60000', 10);
+    res.setTimeout(requestTimeout, () => {
       console.error(`[${new Date().toISOString()}] Request timeout: ${req.method} ${req.path}`);
       if (!res.headersSent) {
         res.status(504).json({
           error: 'Request timeout',
-          message: 'The request took too long to process (>10s)'
+          message: `The request took too long to process (>${requestTimeout / 1000}s)`
         });
       }
     });
