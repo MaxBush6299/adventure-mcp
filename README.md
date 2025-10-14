@@ -1,9 +1,5 @@
 # MSSQL Database MCP Server
 
-<div align="center">
-  <img src="./src/img/logo.png" alt="MSSQL Database MCP server logo" width="400"/>
-</div>
-
 ## What is this? 🤔
 
 This is a server that lets your LLMs (like Claude, Azure AI Foundry agents) talk directly to your Azure SQL Database! Think of it as a friendly translator that sits between your AI assistant and your database, making sure they can chat securely and efficiently.
