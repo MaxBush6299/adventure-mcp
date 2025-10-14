@@ -5,18 +5,20 @@ import { ToolContext, isValidAuthContext } from './ToolContext.js';
 export class InsertDataTool implements Tool {
   [key: string]: any;
   name = "insert_data";
-  description = `Inserts data into an MSSQL Database table. Supports both single record insertion and multiple record insertion using standard SQL INSERT with VALUES clause.
+  description = `Inserts data into an MSSQL Database table. Supports both single and multiple record insertion using standard SQL INSERT with VALUES clause.
 FORMAT EXAMPLES:
 Single Record Insert:
 {
   "tableName": "Users",
-  "data": {
-    "name": "John Doe",
-    "email": "john@example.com",
-    "age": 30,
-    "isActive": true,
-    "createdDate": "2023-01-15"
-  }
+  "data": [
+    {
+      "name": "John Doe",
+      "email": "john@example.com",
+      "age": 30,
+      "isActive": true,
+      "createdDate": "2023-01-15"
+    }
+  ]
 }
 Multiple Records Insert:
 {
@@ -42,8 +44,7 @@ GENERATED SQL FORMAT:
 - Single: INSERT INTO table (col1, col2) VALUES (@param1, @param2)
 - Multiple: INSERT INTO table (col1, col2) VALUES (@param1, @param2), (@param3, @param4), ...
 IMPORTANT RULES:
-- For single record: Use a single object for the 'data' field
-- For multiple records: Use an array of objects for the 'data' field
+- Always use an array for the 'data' field (even for single records, use an array with one object)
 - All objects in array must have identical column names
 - Column names must match the actual database table columns exactly
 - Values should match the expected data types (string, number, boolean, date)
@@ -56,17 +57,10 @@ IMPORTANT RULES:
         description: "Name of the table to insert data into" 
       },
       data: { 
-        oneOf: [
-          { 
-            type: "object", 
-            description: "Single record data object with column names as keys and values as the data to insert. Example: {\"name\": \"John\", \"age\": 30}" 
-          },
-          { 
-            type: "array", 
-            items: { type: "object" },
-            description: "Array of data objects for multiple record insertion. Each object must have identical column structure. Example: [{\"name\": \"John\", \"age\": 30}, {\"name\": \"Jane\", \"age\": 25}]" 
-          }
-        ]
+        type: "array",
+        items: { type: "object" },
+        description: "Array of data objects to insert. For single record, pass array with one object. Example: [{\"name\": \"John\", \"age\": 30}] or [{\"name\": \"John\", \"age\": 30}, {\"name\": \"Jane\", \"age\": 25}]",
+        minItems: 1
       },
     },
     required: ["tableName", "data"],

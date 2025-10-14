@@ -1,6 +1,7 @@
 import sql from "mssql";
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { ToolContext, isValidAuthContext } from './ToolContext.js';
+import { getGlobalSqlPool } from '../index.js';
 
 export class ListTableTool implements Tool {
   [key: string]: any;
@@ -43,7 +44,11 @@ export class ListTableTool implements Tool {
       } else {
         // Non-authenticated mode: use global pool (backward compatibility)
         console.log(`[ListTableTool] Using global pool (no authentication)`);
-        request = new sql.Request();
+        const globalPool = getGlobalSqlPool();
+        if (!globalPool) {
+          throw new Error('Global SQL pool not available');
+        }
+        request = globalPool.request();
       }
       
       const schemaFilter = parameters && parameters.length > 0 ? `AND TABLE_SCHEMA IN (${parameters.map((p: string) => `'${p}'`).join(", ")})` : "";

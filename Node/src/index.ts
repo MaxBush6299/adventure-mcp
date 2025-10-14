@@ -59,6 +59,11 @@ let globalSqlPool: sql.ConnectionPool | null = null;
 let globalAccessToken: string | null = null;
 let globalTokenExpiresOn: Date | null = null;
 
+// Export function to get the global SQL pool for backward compatibility
+export function getGlobalSqlPool(): sql.ConnectionPool | null {
+  return globalSqlPool;
+}
+
 // Function to create SQL config with fresh access token, returns token and expiry
 export async function createSqlConfig(): Promise<{ config: sql.config, token: string, expiresOn: Date }> {
   // Use ManagedIdentityCredential explicitly for container environments
@@ -494,6 +499,11 @@ async function runHttpServer() {
   // MCP endpoint - handle both GET and POST requests
   // GET request returns server info, POST handles JSON-RPC 2.0
   app.get('/mcp', async (req: express.Request, res: express.Response) => {
+    // Add Streamable HTTP headers
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('X-MCP-Protocol-Version', '2024-11-05');
+    res.setHeader('X-MCP-Transport', 'streamable-http');
+    
     // Some MCP clients expect GET /mcp to return server information
     res.json({
       server: {
@@ -505,7 +515,8 @@ async function runHttpServer() {
         tools: { listTools: true }
       },
       tools: getToolsList(),
-      transport: "http",
+      transport: "streamable-http",
+      protocolVersion: "2024-11-05",
       endpoints: {
         "initialize": "POST /mcp with JSON-RPC 2.0 (public)",
         "tools/list": "GET /mcp or POST /mcp with JSON-RPC 2.0 (public)",
@@ -518,7 +529,31 @@ async function runHttpServer() {
   // MCP JSON-RPC 2.0 endpoint - handles direct JSON-RPC requests
   app.post('/mcp', async (req: express.Request, res: express.Response) => {
     const startTime = Date.now();
-    console.log(`[${new Date().toISOString()}] JSON-RPC Request: ${req.body?.method || 'unknown'}`);
+    const requestId = Math.random().toString(36).substring(7);
+    
+    console.log(`\n========== MCP REQUEST [${requestId}] ==========`);
+    console.log(`[${new Date().toISOString()}] Method: ${req.body?.method || 'unknown'}`);
+    console.log(`[${new Date().toISOString()}] Request ID: ${req.body?.id}`);
+    console.log(`[${new Date().toISOString()}] Accept Header: ${req.headers['accept'] || 'none'}`);
+    console.log(`[${new Date().toISOString()}] Content-Type: ${req.headers['content-type'] || 'none'}`);
+    console.log(`[${new Date().toISOString()}] Request Body: ${JSON.stringify(req.body).substring(0, 200)}...`);
+    
+    // Check if client accepts Server-Sent Events (for Copilot Studio compatibility)
+    const acceptHeader = req.headers['accept'] || '';
+    const useSSE = acceptHeader.includes('text/event-stream');
+    
+    // Add appropriate headers based on requested format
+    if (useSSE) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache, no-store');
+      res.setHeader('Connection', 'keep-alive');
+      console.log(`[${new Date().toISOString()}] Response format: SSE (Server-Sent Events)`);
+    } else {
+      res.setHeader('Content-Type', 'application/json');
+      console.log(`[${new Date().toISOString()}] Response format: JSON`);
+    }
+    res.setHeader('X-MCP-Protocol-Version', '2024-11-05');
+    res.setHeader('X-MCP-Transport', 'streamable-http');
     
     try {
       const { jsonrpc, method, params, id } = req.body;
@@ -562,7 +597,9 @@ async function runHttpServer() {
           result = {
             protocolVersion: "2024-11-05",
             capabilities: {
-              tools: {},
+              tools: {
+                listChanged: true  // Tells client that tools list can change and should be queried
+              },
               logging: {}
             },
             serverInfo: {
@@ -750,8 +787,18 @@ async function runHttpServer() {
           // Handle initialized notification - required by MCP protocol after initialize
           console.log(`[${new Date().toISOString()}] Processing notifications/initialized`);
           
-          // For notifications, we don't send a response (just acknowledge)
-          res.status(200).end();
+          // For notifications in SSE mode, send acknowledgment in SSE format
+          // For JSON mode, send empty 200 response
+          if (useSSE) {
+            const sseAck = `event: message\ndata: {"jsonrpc":"2.0"}\n\n`;
+            console.log(`[${new Date().toISOString()}] SUCCESS [${requestId}] notifications/initialized - SSE acknowledgment sent`);
+            console.log(`========== END REQUEST [${requestId}] ==========\n`);
+            res.send(sseAck);
+          } else {
+            console.log(`[${new Date().toISOString()}] SUCCESS [${requestId}] notifications/initialized - JSON acknowledgment sent`);
+            console.log(`========== END REQUEST [${requestId}] ==========\n`);
+            res.status(200).end();
+          }
           return;
 
         case 'ping':
@@ -775,19 +822,33 @@ async function runHttpServer() {
 
       // Return successful JSON-RPC 2.0 response
       const duration = Date.now() - startTime;
-      console.log(`[${new Date().toISOString()}] JSON-RPC Success: ${req.body?.method} (${duration}ms)`);
       
-      res.json({
+      const responseData = {
         jsonrpc: '2.0',
         result,
         id
-      });
+      };
+      
+      if (useSSE) {
+        // Send in SSE format for Copilot Studio compatibility
+        const sseMessage = `event: message\ndata: ${JSON.stringify(responseData)}\n\n`;
+        console.log(`[${new Date().toISOString()}] SUCCESS [${requestId}] ${req.body?.method} (${duration}ms)`);
+        console.log(`[${new Date().toISOString()}] SSE Response (first 300 chars): ${sseMessage.substring(0, 300)}...`);
+        console.log(`========== END REQUEST [${requestId}] ==========\n`);
+        res.send(sseMessage);
+      } else {
+        // Send as JSON (default)
+        console.log(`[${new Date().toISOString()}] SUCCESS [${requestId}] ${req.body?.method} (${duration}ms)`);
+        console.log(`[${new Date().toISOString()}] JSON Response (first 300 chars): ${JSON.stringify(responseData).substring(0, 300)}...`);
+        console.log(`========== END REQUEST [${requestId}] ==========\n`);
+        res.json(responseData);
+      }
 
     } catch (error) {
       const duration = Date.now() - startTime;
       console.error(`[${new Date().toISOString()}] JSON-RPC Error: ${req.body?.method} (${duration}ms):`, error);
       
-      res.status(500).json({
+      const errorResponse = {
         jsonrpc: '2.0',
         error: {
           code: -32000,
@@ -795,7 +856,20 @@ async function runHttpServer() {
           data: `Internal server error: ${error}`
         },
         id: req.body?.id || null
-      });
+      };
+      
+      // Check if client accepts SSE format
+      const acceptHeader = req.headers['accept'] || '';
+      const useSSE = acceptHeader.includes('text/event-stream');
+      
+      if (useSSE) {
+        // Send error in SSE format
+        const sseMessage = `event: message\ndata: ${JSON.stringify(errorResponse)}\n\n`;
+        res.status(500).send(sseMessage);
+      } else {
+        // Send as JSON (default)
+        res.status(500).json(errorResponse);
+      }
     }
   });
 
