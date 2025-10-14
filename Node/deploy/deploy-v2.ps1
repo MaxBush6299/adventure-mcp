@@ -1,14 +1,14 @@
-# Deploy MSSQL MCP Server v2 on Port 80
-# This script deploys the v2 container with Streamable HTTP support on standard port 80
+# Deploy MSSQL MCP Server v2
+# This script deploys the v2 container with Streamable HTTP support
 
 Write-Host "`n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-Write-Host "  Deploy MSSQL MCP Server v2 on Port 80" -ForegroundColor Cyan
+Write-Host "  Deploy MSSQL MCP Server v2" -ForegroundColor Cyan
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`n" -ForegroundColor Cyan
 
 # Configuration
 $ResourceGroup = "rg-agentpractice4"
-$Location = "westus"
-$ContainerGroupName = "mssql-mcp-server-v2-port80"
+$Location = "eastus"
+$ContainerGroupName = "mssql-mcp-server-v2"
 $AcrName = "advenworks"
 $AcrServer = "$AcrName.azurecr.io"
 $ContainerImage = "$AcrServer/mssql-mcp-server:streamable"
@@ -31,7 +31,7 @@ Write-Host "  Container: $ContainerGroupName" -ForegroundColor White
 Write-Host "  Image: $ContainerImage" -ForegroundColor White
 Write-Host "  SQL Server: $SqlServerName" -ForegroundColor White
 Write-Host "  Database: $SqlDatabaseName" -ForegroundColor White
-Write-Host "  Port: 80 (HTTP)" -ForegroundColor Green
+Write-Host "  Port: 8080 (HTTP)" -ForegroundColor Green
 Write-Host ""
 
 # Get ACR credentials
