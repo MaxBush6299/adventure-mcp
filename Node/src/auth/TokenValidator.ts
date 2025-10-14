@@ -148,24 +148,16 @@ export class TokenValidator {
 
   /**
    * Extract user identity from JWT payload claims
+   * Supports both user tokens (delegated permissions) and application tokens (client credentials)
    */
   private extractUserIdentity(payload: any, token: string): UserIdentity {
     // Validate required claims
     const oid = payload.oid || payload.sub;
-    const upn = payload.upn || payload.preferred_username || payload.email;
     const tid = payload.tid;
 
     if (!oid) {
       throw new TokenValidationError(
         'Token missing required claim: oid or sub',
-        TokenValidationErrorCode.MISSING_CLAIMS,
-        { availableClaims: Object.keys(payload) }
-      );
-    }
-
-    if (!upn) {
-      throw new TokenValidationError(
-        'Token missing required claim: upn, preferred_username, or email',
         TokenValidationErrorCode.MISSING_CLAIMS,
         { availableClaims: Object.keys(payload) }
       );
@@ -179,11 +171,42 @@ export class TokenValidator {
       );
     }
 
+    // Check if this is an application token (client credentials) or user token (delegated)
+    const isAppToken = !!payload.appid && !payload.upn && !payload.preferred_username && !payload.email;
+    
+    let upn: string;
+    let email: string;
+    let name: string;
+    
+    if (isAppToken) {
+      // Application token - use app identity
+      const appName = payload.app_displayname || payload.azp || 'Application';
+      upn = `app:${payload.appid}`;
+      email = `${payload.appid}@apps.microsoft.com`;
+      name = appName;
+      
+      console.log(`[Auth] Application token detected: ${appName} (${payload.appid})`);
+    } else {
+      // User token - extract user identity
+      upn = payload.upn || payload.preferred_username || payload.email || '';
+      
+      if (!upn) {
+        throw new TokenValidationError(
+          'User token missing required claim: upn, preferred_username, or email',
+          TokenValidationErrorCode.MISSING_CLAIMS,
+          { availableClaims: Object.keys(payload) }
+        );
+      }
+      
+      email = payload.email || upn;
+      name = payload.name || upn.split('@')[0];
+      
+      console.log(`[Auth] User token detected: ${name} (${upn})`);
+    }
+
     // Extract optional claims
     const groups = payload.groups || [];
     const roles = payload.roles || [];
-    const email = payload.email || upn;
-    const name = payload.name || upn.split('@')[0];
 
     return {
       userId: oid,

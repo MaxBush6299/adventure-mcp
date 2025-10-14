@@ -1,0 +1,37 @@
+<policies>
+    <inbound>
+        <base />
+        
+        <!-- Enable JWT Validation WITH scope requirement (PRODUCTION READY) -->
+        <!-- Using v1.0 endpoint to match v1.0 tokens (issuer: sts.windows.net) -->
+        <validate-jwt header-name="Authorization" failed-validation-httpcode="401" failed-validation-error-message="Unauthorized. Access token is missing or invalid.">
+            <openid-config url="https://login.microsoftonline.com/2e9b0657-eef8-47af-8747-5e89476faaab/.well-known/openid-configuration" />
+            <audiences>
+                <audience>api://17a97781-0078-4478-8b4e-fe5dda9e2400</audience>
+            </audiences>
+            <!-- Require user_impersonation scope for production -->
+            <required-claims>
+                <claim name="scp" match="any">
+                    <value>user_impersonation</value>
+                </claim>
+            </required-claims>
+        </validate-jwt>
+
+        <!-- Forward Authorization header to backend -->
+        <set-header name="Authorization" exists-action="override">
+            <value>@(context.Request.Headers.GetValueOrDefault("Authorization", ""))</value>
+        </set-header>
+
+        <!-- Update backend service URL to current container IP -->
+        <set-backend-service base-url="http://4.156.202.65:8080" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

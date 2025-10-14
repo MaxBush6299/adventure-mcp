@@ -190,9 +190,9 @@ output containerGroupId string = containerGroup.id
 output principalId string = containerGroup.identity.principalId
 output fqdn string = containerGroup.properties.ipAddress.fqdn
 output ipAddress string = containerGroup.properties.ipAddress.ip
-output mcpSseEndpoint string = 'http://${containerGroup.properties.ipAddress.fqdn}:8080/mcp'
-output mcpMessageEndpoint string = 'http://${containerGroup.properties.ipAddress.fqdn}:8080/mcp/message'
-output healthEndpoint string = 'http://${containerGroup.properties.ipAddress.fqdn}:8080/health'
+output mcpSseEndpoint string = 'http://${containerGroup.properties.ipAddress.fqdn}/mcp'
+output mcpMessageEndpoint string = 'http://${containerGroup.properties.ipAddress.fqdn}/mcp/message'
+output healthEndpoint string = 'http://${containerGroup.properties.ipAddress.fqdn}/health'
 
 // Instructions for database access (output as deployment script guidance)
 output sqlPermissionInstructions string = '''
