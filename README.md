@@ -27,11 +27,61 @@ This server leverages the Model Context Protocol (MCP), a versatile framework th
   <img src="./Networking diagram.jpg" alt="MCP Server Architecture" width="700"/>
 </div>
 
-The architecture shows:
-- **Entra ID (Azure AD)** authenticates users via HTTPS (Port 443) with token validation and OBO (On-Behalf-Of) exchange
-- **MCP Server** runs in Azure Container Instances, accessible via HTTP (Port 8080)
-- **Azure SQL Database** connects over TDS/TCP (Port 1433) with managed identity authentication
-- **Semantic Kernel Agent** can optionally connect for AI orchestration using Azure OpenAI
+#### Request Flow
+
+**1. User Authentication (Entra ID / Azure AD)**
+- User authenticates via HTTPS (Port 443)
+- Receives OAuth 2.0 JWT token with `user_impersonation` scope
+- Token includes user identity and permissions
+
+**2. API Gateway (Azure API Management)**
+- **Endpoint**: `https://<your-apim>.azure-api.net/mcp`
+- **Validates JWT tokens** against Azure AD (v1.0 tokens)
+- **Enforces security policies**:
+  - Validates token signature, audience (`api://<your-app-id>`), and expiration
+  - Requires `user_impersonation` scope
+- **Forwards authenticated requests** to backend container on HTTP Port 8080
+- **Rate limiting, throttling, and monitoring** for production workloads
+
+**3. MCP Server (Azure Container Instances)**
+- **Internal IP**: Not publicly accessible (only accessible via APIM)
+- **Receives validated requests** from APIM only
+- **Processes JSON-RPC 2.0** MCP protocol requests
+- **Authenticates to SQL Database** using Managed Identity
+
+**4. Database Access (Azure SQL)**
+- **Connection**: TDS/TCP Port 1433
+- **Authentication**: Azure AD Managed Identity
+- **Row-Level Security (RLS)**: Enforces per-user data isolation using `SESSION_CONTEXT`
+- **Returns data** back through the chain
+
+#### Security Layers
+
+| Layer | Purpose | Authentication Method |
+|-------|---------|----------------------|
+| **Entra ID** | User authentication | OAuth 2.0 / JWT tokens |
+| **APIM** | API gateway & policy enforcement | JWT validation (Azure AD v1.0) |
+| **Container** | MCP protocol handler | Receives validated requests from APIM |
+| **SQL Database** | Data storage & RLS enforcement | Managed Identity + Row-Level Security |
+
+#### Key Components
+
+- **Entra ID (Azure AD)** - Authenticates users and issues JWT tokens
+- **API Management (APIM)** - Production-grade API gateway with security policies, rate limiting, and monitoring
+- **MCP Server Container** - Runs in Azure Container Instances, processes MCP requests
+- **Azure SQL Database** - Enterprise database with managed identity authentication and RLS
+- **Semantic Kernel Agent** (Optional) - Can connect for AI orchestration using Azure OpenAI
+
+> **💡 Why APIM?** API Management provides a secure, scalable gateway that validates all requests before they reach the container, adds monitoring/analytics, enables rate limiting, and provides a consistent public endpoint even if backend infrastructure changes.
+
+#### Configuration Placeholders
+
+When deploying, replace these placeholders with your actual values:
+- `<your-apim>` - Your API Management service name
+- `<your-app-id>` - Your Azure AD App Registration client ID
+- `<your-tenant-id>` - Your Azure AD tenant ID
+- `<your-server>` - Your Azure SQL server name
+- `<your-database>` - Your database name
 
 ### What Can It Do? 📊
 
@@ -100,9 +150,10 @@ Perfect for Azure AI Foundry agents and production environments.
 ./deploy/deploy.sh
 ```
 
-⚠️ **IMPORTANT**: After deployment, you **MUST** configure managed identity permissions. See:
-- **[Node/docs/MANAGED_IDENTITY_SETUP.md](Node/docs/MANAGED_IDENTITY_SETUP.md)** - Complete setup guide
-- **[Node/docs/QUICK_REFERENCE.md](Node/docs/QUICK_REFERENCE.md)** - Quick reference card
+⚠️ **IMPORTANT**: After deployment, you **MUST** configure managed identity permissions to access Azure SQL Database. This involves:
+1. Creating an Azure AD user for the managed identity in SQL
+2. Granting appropriate database roles (db_datareader, db_datawriter, etc.)
+3. Ensuring the SQL Server allows Azure AD authentication
 
 See [Container Deployment Guide](#container-deployment-guide) for detailed instructions.
 
@@ -135,17 +186,6 @@ For local development, testing, or stdio-based clients like Claude Desktop.
    ```bash
    npm start
    ```
-
-## Documentation 📚
-
-### Deployment & Setup
-- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Complete deployment guide with Azure AI Projects configuration
-- **[Node/docs/MANAGED_IDENTITY_SETUP.md](Node/docs/MANAGED_IDENTITY_SETUP.md)** - Managed identity setup (REQUIRED for production)
-- **[Node/docs/QUICK_REFERENCE.md](Node/docs/QUICK_REFERENCE.md)** - Quick reference commands
-
-### Troubleshooting
-- **[Node/docs/TROUBLESHOOTING.md](Node/docs/TROUBLESHOOTING.md)** - Common issues and solutions
-- **[Node/docs/FIX_SUMMARY.md](Node/docs/FIX_SUMMARY.md)** - Recent authentication fix details
 
 ## Configuration Setup
 
@@ -369,14 +409,6 @@ MCP_SERVER_URL=http://remote-server:8080 node test/test-http-mcp.js
 curl http://localhost:8080/health
 ```
 
-## Architecture
-
-```
-┌─────────────────┐    HTTP/SSE     ┌─────────────────┐    Azure AD      ┌──────────────────┐
-│   AI Foundry    │ ──────────────→ │   MCP Server    │ ──────────────→  │   Azure SQL      │
-│     Agent       │                 │  (Container)    │   (Managed ID)   │    Database      │
-└─────────────────┘                 └─────────────────┘                  └──────────────────┘
-```
 
 ## Security Features
 
@@ -386,13 +418,6 @@ curl http://localhost:8080/health
 - **CORS Configuration**: Configurable cross-origin access controls
 - **Health Monitoring**: Built-in health checks and graceful shutdown
 
-## Production Deployment 🚀
-
-For detailed production deployment instructions, troubleshooting, and Azure AI Projects integration, see:
-
-📋 **[DEPLOYMENT.md](./DEPLOYMENT.md)** - Complete production deployment guide
-
-> **Note**: DEPLOYMENT.md contains deployment-specific details and is excluded from version control for security.
 
 ## Troubleshooting
 
@@ -586,18 +611,6 @@ Expand compatibility to hybrid and on-premises SQL Server environments with mult
 
 ---
 
-## 📚 Documentation
-
-For detailed information, check out our comprehensive documentation:
-
-- **[TODO.md](./Node/docs/TODO.md)** - Complete roadmap with implementation details
-- **[SYNTHETIC_DATA_IMPLEMENTATION.md](./Node/docs/SYNTHETIC_DATA_IMPLEMENTATION.md)** - Synthetic data tool guide
-- **[DEPLOYMENT_GUIDE.md](./Node/docs/DEPLOYMENT_GUIDE.md)** - Step-by-step deployment instructions
-- **[TROUBLESHOOTING.md](./Node/docs/TROUBLESHOOTING.md)** - Common issues and solutions
-- **[QUICK_REFERENCE.md](./Node/docs/QUICK_REFERENCE.md)** - Quick reference for all tools and features
-
----
-
 ## 🤝 Contributing
 
 We welcome contributions! If you'd like to implement any of the planned features or have suggestions for new ones, please:
@@ -618,8 +631,7 @@ See [LICENSE](./Node/LICENSE) file for details.
 ### October 9, 2025
 - ✅ **Added Synthetic Data Generation Tool** - Generate realistic test data with intelligent pattern matching (25+ column patterns)
 - ✅ **Deployed to Production** - All 16 tools verified and accessible in Azure Container Instances
-- ✅ **Updated Documentation** - Comprehensive guides for new features
-- ✅ **Improved Architecture Diagram** - Added networking diagram showing complete flow
+- ✅ **Improved Architecture Diagram** - Added networking diagram showing complete authentication flow with APIM gateway
 
 ### Previous Updates
 - ✅ Added 7 database discovery tools (stored procedures, views, functions, schemas, triggers, row counts)
