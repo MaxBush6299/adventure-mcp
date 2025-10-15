@@ -41,6 +41,9 @@ import { ListSchemasTool } from "./tools/ListSchemasTool.js";
 import { GetTableRowCountTool } from "./tools/GetTableRowCountTool.js";
 import { ListTriggersTool } from "./tools/ListTriggersTool.js";
 import { GenerateSyntheticDataTool } from "./tools/GenerateSyntheticDataTool.js";
+import { CheckDatabaseHealthTool } from "./tools/CheckDatabaseHealthTool.js";
+import { MonitorQueryPerformanceTool } from "./tools/MonitorQueryPerformanceTool.js";
+import { AnalyzeIndexUsageTool } from "./tools/AnalyzeIndexUsageTool.js";
 import { DefaultAzureCredential, ManagedIdentityCredential, InteractiveBrowserCredential } from "@azure/identity";
 import { ToolContext } from "./tools/ToolContext.js";
 
@@ -130,6 +133,9 @@ const listSchemasTool = new ListSchemasTool();
 const getTableRowCountTool = new GetTableRowCountTool();
 const listTriggersTool = new ListTriggersTool();
 const generateSyntheticDataTool = new GenerateSyntheticDataTool();
+const checkDatabaseHealthTool = new CheckDatabaseHealthTool();
+const monitorQueryPerformanceTool = new MonitorQueryPerformanceTool();
+const analyzeIndexUsageTool = new AnalyzeIndexUsageTool();
 
 const server = new Server(
   {
@@ -152,8 +158,8 @@ function getToolsList() {
   if (!cachedToolsList) {
     console.log('[CACHE] Building tools list cache...');
     const availableTools = isReadOnly
-      ? [listTableTool, readDataTool, describeTableTool, listStoredProceduresTool, describeStoredProcedureTool, listViewsTool, listFunctionsTool, listSchemasTool, getTableRowCountTool, listTriggersTool]
-      : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool, listStoredProceduresTool, describeStoredProcedureTool, listViewsTool, listFunctionsTool, listSchemasTool, getTableRowCountTool, listTriggersTool, generateSyntheticDataTool];
+      ? [listTableTool, readDataTool, describeTableTool, listStoredProceduresTool, describeStoredProcedureTool, listViewsTool, listFunctionsTool, listSchemasTool, getTableRowCountTool, listTriggersTool, checkDatabaseHealthTool, monitorQueryPerformanceTool, analyzeIndexUsageTool]
+      : [insertDataTool, readDataTool, describeTableTool, updateDataTool, createTableTool, createIndexTool, dropTableTool, listTableTool, listStoredProceduresTool, describeStoredProcedureTool, listViewsTool, listFunctionsTool, listSchemasTool, getTableRowCountTool, listTriggersTool, generateSyntheticDataTool, checkDatabaseHealthTool, monitorQueryPerformanceTool, analyzeIndexUsageTool];
     
     cachedToolsList = availableTools.map(tool => ({
       name: tool.name,
@@ -239,6 +245,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case generateSyntheticDataTool.name:
         result = await generateSyntheticDataTool.run(args);
+        break;
+      case checkDatabaseHealthTool.name:
+        result = await checkDatabaseHealthTool.run(args);
+        break;
+      case monitorQueryPerformanceTool.name:
+        result = await monitorQueryPerformanceTool.run(args);
+        break;
+      case analyzeIndexUsageTool.name:
+        result = await analyzeIndexUsageTool.run(args);
         break;
       default:
         return {
@@ -752,6 +767,15 @@ async function runHttpServer() {
                 break;
               case generateSyntheticDataTool.name:
                 toolResult = await generateSyntheticDataTool.run(toolArgs, toolContext);
+                break;
+              case checkDatabaseHealthTool.name:
+                toolResult = await checkDatabaseHealthTool.run(toolArgs, toolContext);
+                break;
+              case monitorQueryPerformanceTool.name:
+                toolResult = await monitorQueryPerformanceTool.run(toolArgs, toolContext);
+                break;
+              case analyzeIndexUsageTool.name:
+                toolResult = await analyzeIndexUsageTool.run(toolArgs, toolContext);
                 break;
               default:
                 res.status(400).json({

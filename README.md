@@ -94,7 +94,7 @@ When deploying, replace these placeholders with your actual values:
 
 ### Available Tools 🔧
 
-The MCP server provides **16 powerful tools** for database operations and discovery:
+The MCP server provides **19 powerful tools** for database operations, discovery, and administration:
 
 #### Data Operations
 | Tool | Description |
@@ -102,7 +102,7 @@ The MCP server provides **16 powerful tools** for database operations and discov
 | `insert_data` | Insert records into tables with support for single or batch operations |
 | `read_data` | Execute SELECT queries to retrieve data from tables |
 | `update_data` | Update records using WHERE clauses for precise modifications |
-| `generate_synthetic_data` | **NEW!** Generate realistic test data based on table schema - Perfect for testing, demos, and development |
+| `generate_synthetic_data` | Generate realistic test data based on table schema - Perfect for testing, demos, and development |
 
 #### Schema Management
 | Tool | Description |
@@ -119,12 +119,19 @@ The MCP server provides **16 powerful tools** for database operations and discov
 | `list_stored_procedures` | Discover stored procedures with optional schema filtering |
 | `describe_stored_procedure` | View stored procedure parameters and definitions |
 | `list_views` | List all database views with optional schema filtering |
-| `list_functions` | List user-defined functions (scalar and table-valued) - **Essential for discovering RLS security predicates!** |
+| `list_functions` | List user-defined functions (scalar and table-valued) - Essential for discovering RLS security predicates |
 | `list_schemas` | List all schemas in the database |
-| `get_table_row_count` | Get row counts for tables or entire schemas - **Useful for verifying Row-Level Security** |
+| `get_table_row_count` | Get row counts for tables or entire schemas - Useful for verifying Row-Level Security |
 | `list_triggers` | List database triggers with optional table filtering |
 
-> **💡 Pro Tip**: The `list_functions` tool is particularly useful for discovering Row-Level Security (RLS) predicates like `fn_securitypredicate_*` functions that enforce per-user data isolation.
+#### Database Administration (DBA Tools) 🆕
+| Tool | Description |
+|------|-------------|
+| `check_database_health` | **NEW!** Comprehensive health check including size, growth, backup status, log usage, and recovery model |
+| `monitor_query_performance` | **NEW!** Identify slow queries with execution stats, CPU time, and logical reads - Essential for performance troubleshooting |
+| `analyze_index_usage` | **NEW!** Find unused, missing, and duplicate indexes to optimize performance and reduce storage costs |
+
+> **💡 Pro Tip for DBAs**: Use `check_database_health` for daily monitoring, `monitor_query_performance` to find slow queries, and `analyze_index_usage` to optimize indexes for maximum performance.
 
 ## Quick Start 🚀
 
